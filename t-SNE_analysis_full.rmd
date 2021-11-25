@@ -1,0 +1,2434 @@
+---
+title: "R Notebook"
+output: html_notebook
+editor_options: 
+  chunk_output_type: console
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute
+code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by 
+placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by 
+pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be 
+saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to 
+preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. 
+Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, 
+the output of the chunk when it was last run in the editor is displayed.
+
+
+
+#loading required libraries and setting up workspace
+```{r}
+#cleaning the work environment
+rm(list = ls(all.names = T))
+
+#load libraries
+{
+  library(Seurat)
+  library(ggplot2)
+  library(sctransform)
+  library(SeuratWrappers)
+  library(scales)
+  library(dplyr)
+  library(tidyverse)
+  library(ggrepel)
+  library(ggpubr)
+  library(rstatix)
+  library(stringr)
+  library(ggpattern)
+  library(Matrix)
+  
+  library( digest )
+  require( dunn.test )
+  library( flowCore )
+  library( FlowSOM )
+  library( ggridges )
+  require( RANN )
+  library( RColorBrewer )
+  library( reshape2 )
+  library( Rtsne )
+  library( umap )
+  
+  library(NMF)
+}
+
+#setting up workspace and location variables
+{
+  #adjust workspace accordingly
+  old_wrkdir <- getwd()
+  setwd("/home/tareens/Workspace/t-SNE_paper/")
+  loc_workspace <- getwd()
+  
+  loc_data <- paste0(loc_workspace, "/00_data/")
+  loc_scripts <- paste0(loc_workspace, "/00_scripts/")
+  
+  loc_seurat_results <- paste0(loc_workspace, "/01_seurat_results/")
+  loc_tsne_diff <- paste0(loc_workspace, "/02_tsne_diff/")
+  
+}
+
+#defining functions
+{
+  # function to generate colours for given length
+  gg_colour_hue <- function(n) {
+    hues = seq(15, 375, length = n + 1)
+    hcl(h = hues, l = 65, c = 100)[1:n]
+    }
+  
+  # function to set random seed depending on base number and string
+  set.seed.here <- function( seed.base, seed.char ){
+      seed.add <- strtoi( substr( digest( seed.char, "xxhash32" ), 2, 8 ), 16 )
+      seed.new <- seed.base + seed.add    
+      set.seed( seed.new )
+      invisible( seed.new )
+  }
+  
+  # source( paste0( loc_scripts, "ce_diff_test.r" ) )
+  # calculates test on differences of cross-entropy
+  ce.diff.test <- function( 
+      cross.entropy, 
+      event.partition, 
+      partition.label, partition.color, partition.line.type, 
+      base.test, base.dist, 
+      dendrogram.order.weight, 
+      result, cdf.figure, dendrogram.figure 
+  )
+  {
+      partition <- levels( event.partition )
+      partition.n <- length( partition )
+      
+      cross.entropy.split <- split( cross.entropy, event.partition )
+      
+      if ( base.test == "ks" )
+      {
+          if ( partition.n == 2 )
+          {
+              ks.test.res <- ks.test( cross.entropy.split[[ 1 ]], 
+                  cross.entropy.split[[ 2 ]] )
+              
+              test.res <- list( ks.single = ks.test.res )
+          }
+          else if ( partition.n > 2 )
+          {
+              comparison.n <- partition.n * ( partition.n - 1 ) / 2
+              
+              ks.pair <- vector( "list", comparison.n )
+              comparison <- character( comparison.n )
+              D.stat <- numeric( comparison.n )
+              p.value <- numeric( comparison.n )
+  
+              k <- 1
+              
+              for ( i in 1 : ( partition.n - 1 ) )
+                  for ( j in (i+1) : partition.n )
+                  {
+                      ks.pair[[ k ]] <- ks.test( cross.entropy.split[[ i ]], 
+                          cross.entropy.split[[ j ]] )
+                      
+                      comparison[ k ] <- sprintf( "%s - %s", 
+                          partition.label[ partition[ i ] ], 
+                          partition.label[ partition[ j ] ] )
+                      
+                      D.stat[ k ] <- ks.pair[[ k ]]$statistic
+                      
+                      p.value[ k ] <- ks.pair[[ k ]]$p.value
+                      
+                      k <- k + 1
+                  }
+              
+              p.value.adj <- p.adjust( p.value, "holm" )
+              
+              test.res <- list( ks.multiple = list( ks.pair = ks.pair, 
+                  comparison = comparison, D.stat = D.stat, 
+                  p.value = p.value, p.value.adj = p.value.adj ) )
+          }
+          else
+              stop( "no partitions for testing cross-entropy differences" )
+      }
+      else if ( base.test == "rank" )
+      {
+          if ( partition.n == 2 )
+          {
+              wilcox.test.res <- wilcox.test( cross.entropy.split[[ 1 ]], 
+                  cross.entropy.split[[ 2 ]] )
+              
+              test.res <- list( rank.single = wilcox.test.res )
+          }
+          else if ( partition.n > 2 )
+          {
+              kruskal.test.res <- kruskal.test( cross.entropy, 
+                  event.partition )
+              
+              dunn.test.res <- dunn.test( cross.entropy, event.partition, 
+                  method = "holm", alpha = fcs.ce.diff.test.alpha, altp = TRUE, 
+                  kw = FALSE, table = FALSE, list = TRUE )
+              
+              test.res <- list( rank.multiple = list( 
+                  kruskal = kruskal.test.res, dunn = dunn.test.res ) )
+          }
+          else
+              stop( "no partitions for testing cross-entropy differences" )
+      }
+      else
+          stop( "wrong base test for cross-entropy differences" )
+      
+      if ( ! is.null( result ) )
+      {
+          result.file <- file( result, "w" )
+          sink( result.file )
+          
+          tr.name <- names( test.res )
+          stopifnot( length( tr.name ) == 1 )
+          
+          if ( tr.name == "ks.single" )
+          {
+              cat( "\n**  Kolmogorov-Smirnov test\n")
+              
+              print( test.res$ks.single )
+          }
+          else if ( tr.name == "ks.multiple" )
+          {
+              cat( "\n**  Multiple Kolmogorov-Smirnov tests with Holm correction\n\n")
+              
+              comparison.width <- max( nchar( test.res$ks.multiple$comparison ) )
+              
+              for ( i in 1 : length( test.res$ks.multiple$comparison ) )
+                  cat( sprintf( "%-*s\t\tD = %g\t\tpv = %g\t\tadj-pv = %g\n", 
+                      comparison.width, 
+                      test.res$ks.multiple$comparison[ i ], 
+                      test.res$ks.multiple$D.stat[ i ], 
+                      test.res$ks.multiple$p.value[ i ], 
+                      test.res$ks.multiple$p.value.adj[ i ] ) )
+          }
+          else if ( tr.name == "rank.single" )
+          {
+              cat( "\n**  Wilcoxon rank sum test\n")
+              
+              print( test.res$rank.single )
+          }
+          else if ( tr.name == "rank.multiple" )
+          {
+              cat( "\n**  Kruskal-Wallis rank sum test\n")
+              
+              print( test.res$rank.multiple$kruskal )
+              
+              cat( "\n**  Dunn post-hoc test with Holm correction\n\n")
+              
+              comparison.width <- max( nchar( 
+                  test.res$rank.multiple$dunn$comparison ) )
+              
+              for ( i in 1 : length( test.res$rank.multiple$dunn$comparisons ) )
+                  cat( sprintf( "%-*s\t\tZ = %g\t\tpv = %g\t\tadj-pv = %g\n", 
+                      comparison.width, 
+                      test.res$rank.multiple$dunn$comparisons[ i ], 
+                      test.res$rank.multiple$dunn$Z[ i ], 
+                      test.res$rank.multiple$dunn$altP[ i ], 
+                      test.res$rank.multiple$dunn$altP.adjusted[ i ] ) )
+          }
+          else
+          {
+              sink()
+              close( result.file )
+              stop( "unknown test in ce-diff result" )
+          }
+          
+          sink()
+          close( result.file )
+      }
+      
+      if ( ! is.null( cdf.figure ) )
+      {
+          if ( is.null( partition.label ) )
+              partition.label = partition
+          
+          if ( is.null( partition.color ) )
+              partition.color <- rainbow( partition.n )
+          
+          if ( is.null( partition.line.type ) )
+              partition.line.type <- rep( 1, partition.n )
+          
+          png( filename = cdf.figure, width = fcs.ce.diff.figure.cdf.width, 
+              height = fcs.ce.diff.figure.cdf.height )
+          
+          par( mar = c( 5.5, 6, 2, 1.5 ) )
+          
+          plot( ecdf( cross.entropy ), ylim = c( 0, 1 ), 
+              xlab = "Cross-entropy", ylab = "CDF", main = "", 
+              cex.lab = 3, cex.axis = 2.5, 
+              col = fcs.ce.diff.figure.cdf.all.color, 
+              lwd = fcs.ce.diff.figure.line.width - 1, do.points = FALSE )
+          
+          for ( pall in partition )
+          {
+              ces <- cross.entropy.split[[ pall ]]
+              ces.n <- length( ces )
+              
+              if ( ces.n < fcs.ce.diff.figure.cdf.resolution ) {
+                  plot( ecdf( ces ), col = partition.color[ pall ], 
+                      lty = partition.line.type[ pall ], 
+                      lwd = fcs.ce.diff.figure.line.width, 
+                      do.points = FALSE, add = TRUE )
+              }
+              else {
+                  ecdf.x <- sort( ces )
+                  ecdf.y <- 1 : ces.n / ces.n
+                  
+                  lines( ecdf.x, ecdf.y, col = partition.color[ pall ], 
+                      lty = partition.line.type[ pall ], 
+                      lwd = fcs.ce.diff.figure.line.width )
+              }
+          }
+          
+          legend( "bottomright", 
+              legend = c( fcs.ce.diff.figure.cdf.all.label, partition.label ), 
+              col = c( fcs.ce.diff.figure.cdf.all.color, partition.color ), 
+              lty = c(1, partition.line.type), 
+              lwd = fcs.ce.diff.figure.line.width, 
+              cex = fcs.ce.diff.figure.font.size )
+          
+          dev.off()
+      }
+      
+      if ( ! is.null( dendrogram.figure ) && partition.n > 2 )
+      {
+          cross.entropy.dist <- matrix( 0, nrow = partition.n, 
+              ncol = partition.n )
+          
+          for ( i in 1 : ( partition.n - 1 ) )
+              for ( j in (i+1) : partition.n )
+              {
+                  if ( base.dist == "ks" )
+                      cross.entropy.dist[ i, j ] <- ks.test( 
+                          cross.entropy.split[[ i ]], 
+                          cross.entropy.split[[ j ]] 
+                      )$statistic
+                  else if ( base.dist == "median" )
+                      cross.entropy.dist[ i, j ] <- abs( 
+                          median( cross.entropy.split[[ i ]] ) - 
+                          median( cross.entropy.split[[ j ]] )
+                      )
+                  else
+                      stop( "wrong base dist for cross-entropy differences" )
+                  
+                  cross.entropy.dist[ j, i ] <- cross.entropy.dist[ i, j ]
+              }
+          
+          cross.entropy.hclust <- hclust( as.dist( cross.entropy.dist ) )
+          
+          if ( ! is.null( dendrogram.order.weight ) )
+              cross.entropy.hclust <- as.hclust( reorder( 
+                  as.dendrogram( cross.entropy.hclust ), 
+                  dendrogram.order.weight, 
+                  agglo.FUN = mean
+              ) )
+          
+          if ( is.null( partition.label ) )
+              partition.label = partition
+          
+          png( filename = dendrogram.figure, 
+              width = fcs.ce.diff.figure.dendrogram.width, 
+              height = fcs.ce.diff.figure.dendrogram.height )
+          
+          par( mar = c( 5, 5.6, 4, 1.4 ) )
+          
+          plot( cross.entropy.hclust, 
+              labels = partition.label, hang = -1, 
+              xlab = "", ylab = "", main = "", sub = "", cex.axis = 3, 
+              cex = fcs.ce.diff.figure.font.size )
+          
+          dev.off()
+      }
+      
+      test.res
+  }
+  
+  # source( paste0( loc_scripts, "ce_diff_test_tsne.r" ) )
+  # calculates cross-entropy for tsne plots and calls ce.diff.test
+  ce.diff.test.tsne <- function( 
+      orig.data, tsne.data, 
+      event.partition, 
+      partition.label = NULL, partition.color = NULL, partition.line.type = NULL, 
+      base.test = "ks", base.dist = "ks", 
+      prob.sample.n = NULL, dendrogram.order.weight = NULL, 
+      result = NULL, cdf.figure = NULL, dendrogram.figure = NULL 
+  )
+  {
+      stopifnot( nrow( orig.data ) == nrow( tsne.data ) && 
+          nrow( orig.data ) == length( event.partition ) )
+      
+      data.n <- nrow( orig.data )
+      
+      if ( ! is.null( prob.sample.n ) && prob.sample.n < data.n )
+          prob.sample.idx <- sample( data.n, prob.sample.n )
+      else
+          prob.sample.idx <- 1 : data.n
+      
+      if ( fcs.use.cached.results && 
+          file.exists( fcs.ce.diff.tsne.cache.file.path ) )
+      {
+          cat( "Using cached results for probability\n" )
+          
+          load( fcs.ce.diff.tsne.cache.file.path )
+      }
+      else
+      {
+          cat( "Calculating probability\n" )
+          
+          # sampling here temporary, until optimizing dist( tsne.dat ) below
+          orig.tsne.prob <- calculate.probability.tsne( 
+              orig.data[ prob.sample.idx, ], 
+              tsne.data[ prob.sample.idx, ] 
+          )
+          
+          save( orig.tsne.prob, file = fcs.ce.diff.tsne.cache.file.path )
+      }
+      
+      cross.entropy.all <- calculate.cross.entropy( orig.tsne.prob$orig, 
+          orig.tsne.prob$tsne )
+      
+      event.partition.all <- event.partition[ prob.sample.idx ]
+      
+      ce.diff.test( 
+          cross.entropy.all, 
+          event.partition.all, 
+          partition.label, partition.color, partition.line.type, 
+          base.test, base.dist, 
+          dendrogram.order.weight, 
+          result, cdf.figure, dendrogram.figure
+      )
+  }
+  
+  calculate.probability.tsne <- function( orig.dat, tsne.dat )
+  {
+      orig.dat.n <- nrow( orig.dat )
+      tsne.dat.n <- nrow( tsne.dat )
+      
+      stopifnot( orig.dat.n == tsne.dat.n )
+      
+      # find nearest neighbors in original space and their distances
+      
+      orig.dat.nn2 <- nn2( normalize_input( orig.dat ), 
+          k = fcs.ce.diff.tsne.perplexity.factor * fcs.tsne.perplexity + 1 )
+      
+      orig.dat.self.idx <- sapply( 1 : orig.dat.n, function( ri ) {
+          ri.idx <- which( orig.dat.nn2$nn.idx[ ri, ] == ri )
+          ifelse( length( ri.idx ) == 1, ri.idx, NA )
+      } )
+      
+      stopifnot( ! is.na( orig.dat.self.idx ) )
+      
+      orig.neigh <- t( sapply( 1 : orig.dat.n, function( ri ) 
+          orig.dat.nn2$nn.idx[ ri, - orig.dat.self.idx[ ri ] ] ) )
+      
+      orig.dist2 <- t( sapply( 1 : orig.dat.n, function( ri ) 
+          orig.dat.nn2$nn.dists[ ri, - orig.dat.self.idx[ ri ] ]^2 ) )
+      
+      # calculate probabilities associated to distances in original space
+      
+      orig.stdev <- apply( orig.dist2, 1, function( dd2 ) {
+          tsne.perplexity.error <- function( ss, dd2 ) {
+              p <- exp( - dd2 / (2*ss^2) )
+              if ( sum( p ) < .Machine$double.eps )
+                  p <- 1
+              p <- p / sum( p )
+              p <- p[ p > 0 ]
+              2^( - sum( p * log2( p ) ) ) - fcs.tsne.perplexity
+          }
+          
+          dd2.min.idx <- 1
+          dd2.ascen <- sort( dd2 )
+          while( dd2.ascen[ dd2.min.idx ] == 0 )
+              dd2.min.idx <- dd2.min.idx + 1
+          ss.lower <- dd2.ascen[ dd2.min.idx ]
+          
+          dd2.max.idx <- 1
+          dd2.descen <- sort( dd2, decreasing = TRUE )
+          while( is.infinite( dd2.descen[ dd2.max.idx ] ) )
+              dd2.max.idx <- dd2.max.idx + 1
+          ss.upper <- dd2.descen[ dd2.max.idx ]
+          
+          while( tsne.perplexity.error( ss.upper, dd2 ) < 0 )
+          {
+              ss.lower <- ss.upper
+              ss.upper <- 2 * ss.upper
+          }
+          
+          while( tsne.perplexity.error( ss.lower, dd2 ) > 0 )
+          {
+              ss.upper <- ss.lower
+              ss.lower <- ss.lower / 2
+          }
+          
+          uniroot( tsne.perplexity.error, dd2, 
+              interval = c( ss.lower, ss.upper ), 
+              tol = ( ss.upper - ss.lower ) * .Machine$double.eps^0.25 )$root
+      } )
+      
+      orig.prob <- t( sapply( 1 : orig.dat.n, function( i ) {
+          p <- exp( - orig.dist2[ i, ] /  ( 2 * orig.stdev[ i ]^2 ) )
+          p / sum( p )
+      } ) )
+      
+      # symmetrize probabilities in original space
+      
+      for ( i in 1 : orig.dat.n )
+          for ( j2 in 1 : length( orig.neigh[ i, ] ) )
+          {
+              j <- orig.neigh[ i, j2 ]
+              
+              i2 <- match( i, orig.neigh[ j, ] )
+              
+              if ( ! is.na( i2 ) )
+              {
+                  if ( j > i )
+                  {
+                      sym.prob <- ( orig.prob[ i, j2 ] + orig.prob[ j, i2 ] ) / 2
+                      orig.prob[ i, j2 ] <- sym.prob
+                      orig.prob[ j, i2 ] <- sym.prob
+                  }
+              }
+              else
+                  orig.prob[ i, j2 ] <- orig.prob[ i, j2 ] / 2
+          }
+      
+      orig.prob <- sweep( orig.prob, 1, rowSums( orig.prob ), "/" )
+      
+      # get distances in tsne space for closest neighbors in original space
+      
+      tsne.dist2 <- t( sapply( 1 : tsne.dat.n, function( i )
+          sapply( orig.neigh[ i, ], function( j )
+              sum( ( tsne.dat[ i, ] - tsne.dat[ j, ] )^2 )
+          )
+      ) )
+      
+      # calculate probabilities associated to distances in tsne representation
+      
+      tsne.prob.factor <- tsne.dat.n / 
+          ( 2 * sum( 1 / ( 1 + dist( tsne.dat )^2 ) ) )
+      
+      tsne.prob <- t( apply( tsne.dist2, 1, function( dd2 ) 
+          p <- tsne.prob.factor / ( 1 + dd2 )
+      ) )
+      
+      list( orig = orig.prob, tsne = tsne.prob )
+  }
+  
+  calculate.cross.entropy <- function( prim.prob, secd.prob )
+  {
+      prim.prob.n <- nrow( prim.prob )
+      secd.prob.n <- nrow( secd.prob )
+      
+      prim.prob.m <- ncol( prim.prob )
+      secd.prob.m <- ncol( secd.prob )
+      
+      stopifnot( prim.prob.n == secd.prob.n && prim.prob.m == secd.prob.m )
+      
+      sapply( 1 : prim.prob.n, function( i ) 
+          - sum( prim.prob[ i, ] * log( secd.prob[ i, ] ) )
+      )
+  }
+  
+  # source( paste0( loc_scripts, "plot_all_dmrd_figures.r" ) )
+  # plots all dimensionality reduction figures
+  plot.all.dmrd.figures <- function( 
+      redu.data, redu.data.max, 
+      redu.figure.lims.factor, redu.figure.point.size, 
+      redu.figure.dir, redu.figure.plot, 
+      dmrd.data, dmrd.event.cluster, dmrd.event.condition 
+  )
+  {
+      redu.lims <- redu.figure.lims.factor * redu.data.max * c( -1, 1 )
+      
+      the.dmrd.figure.width <- fcs.dmrd.figure.width + 
+          fcs.dmrd.label.factor.width * 
+              max( nchar( fcs.condition.label ), nchar( flow.sample.label ), 
+                  nchar( fcs.cluster.label ) )
+      
+      the.dmrd.figure.width.multi <- 
+          fcs.dmrd.figure.ncol * fcs.dmrd.figure.width + 
+          fcs.dmrd.label.factor.width * 
+              max( nchar( fcs.condition.label ), nchar( flow.sample.label ), 
+                  nchar( fcs.cluster.label ) )
+      
+      the.dmrd.figure.height <- fcs.dmrd.figure.height
+      
+      the.dmrd.figure.height.multi <- 
+          fcs.dmrd.figure.nrow * fcs.dmrd.figure.height
+      
+      # plot all events colored by cluster
+      
+      redu.plot <- plot.dimensionality.reduction( 
+          redu.data[ , 1 ], redu.data[ , 2 ], 
+          event.partition = dmrd.event.cluster, 
+          partition.label = fcs.cluster.label, 
+          partition.color = fcs.cluster.color, 
+          dmrd.lims = redu.lims, 
+          point.size = redu.figure.point.size, 
+          show.guide = TRUE 
+      )
+      
+      ggsave( 
+          file.path( redu.figure.dir, 
+              sprintf( "%s_all_events__cluster.png", redu.figure.plot ) ), 
+          redu.plot, 
+          width = the.dmrd.figure.width, height = the.dmrd.figure.height 
+      )
+      
+      # plot all events colored by condition
+      
+      redu.plot <- plot.dimensionality.reduction( 
+          redu.data[ , 1 ], redu.data[ , 2 ], 
+          event.partition = dmrd.event.condition, 
+          partition.label = fcs.condition.label, 
+          partition.color = adjustcolor( fcs.condition.color, 
+              alpha.f = fcs.dmrd.color.alpha ), 
+          dmrd.lims = redu.lims, 
+          point.size = redu.figure.point.size, 
+          show.guide = TRUE 
+      )
+      
+      ggsave( 
+          file.path( redu.figure.dir, 
+              sprintf( "%s_all_events__condition.png", redu.figure.plot ) ), 
+          redu.plot, 
+          width = the.dmrd.figure.width, height = the.dmrd.figure.height 
+      )
+      
+      # plot all events colored by each marker level
+      
+      for ( fch in fcs.channel )
+      {
+          dmrd.event.level <- dmrd.data[ , fch ]
+          
+          redu.plot <- plot.dimensionality.reduction( 
+              redu.data[ , 1 ], redu.data[ , 2 ], 
+              event.level = dmrd.event.level, 
+              dmrd.lims = redu.lims, 
+              point.size = redu.figure.point.size, 
+              show.guide = TRUE, guide.name = fcs.channel.label[ fch ] 
+          )
+          
+          ggsave( 
+              file.path( redu.figure.dir, 
+                  sprintf( "%s_all_events__%s.png", redu.figure.plot, 
+                      fcs.channel.label[ fch ] ) ), 
+              redu.plot, 
+              width = the.dmrd.figure.width, height = the.dmrd.figure.height 
+          )
+      }
+      
+      # plot all conditions colored by cluster
+      
+      redu.plot <- plot.dimensionality.reduction( 
+          redu.data[ , 1 ], redu.data[ , 2 ], 
+          event.group = dmrd.event.condition, 
+          group.label = fcs.condition.label, 
+          event.partition = dmrd.event.cluster, 
+          partition.label = fcs.cluster.label, 
+          partition.color = fcs.cluster.color, 
+          dmrd.lims = redu.lims, 
+          dmrd.nrow = fcs.dmrd.figure.nrow, dmrd.ncol = fcs.dmrd.figure.ncol, 
+          point.size = redu.figure.point.size, 
+          show.guide = TRUE 
+      )
+      
+      ggsave( 
+          file.path( redu.figure.dir, 
+              sprintf( "%s_all_conditions__cluster.png", redu.figure.plot ) ), 
+          redu.plot, 
+          width = the.dmrd.figure.width.multi, 
+          height = the.dmrd.figure.height.multi 
+      )
+      
+      # plot all conditions colored by each marker level
+      
+      for ( fch in fcs.channel )
+      {
+          dmrd.event.level <- dmrd.data[ , fch ]
+          
+          redu.plot <- plot.dimensionality.reduction( 
+              redu.data[ , 1 ], redu.data[ , 2 ], 
+              event.group = dmrd.event.condition, 
+              group.label = fcs.condition.label, 
+              event.level = dmrd.event.level, 
+              dmrd.lims = redu.lims, 
+              dmrd.nrow = fcs.dmrd.figure.nrow, dmrd.ncol = fcs.dmrd.figure.ncol, 
+              point.size = redu.figure.point.size, 
+              show.guide = TRUE, guide.name = fcs.channel.label[ fch ] 
+          )
+          
+          ggsave( 
+              file.path( redu.figure.dir, 
+                  sprintf( "%s_all_conditions__%s.png", redu.figure.plot, 
+                      fcs.channel.label[ fch ] ) ), 
+              redu.plot, 
+              width = the.dmrd.figure.width.multi, 
+              height = the.dmrd.figure.height.multi 
+          )
+      }
+      
+      # plot each condition colored by cluster
+      
+      for ( cond in fcs.condition )
+      {
+          dmrd.cond.idx <- which( dmrd.event.condition == cond )
+          
+          redu.cond.data <- redu.data[ dmrd.cond.idx, ]
+          dmrd.cond.event.cluster <- dmrd.event.cluster[ dmrd.cond.idx ]
+          
+          redu.plot <- plot.dimensionality.reduction( 
+              redu.cond.data[ , 1 ], redu.cond.data[ , 2 ], 
+              event.partition = dmrd.cond.event.cluster, 
+              partition.label = fcs.cluster.label, 
+              partition.color = fcs.cluster.color, 
+              dmrd.lims = redu.lims, 
+              point.size = redu.figure.point.size, 
+              show.guide = TRUE 
+          )
+          
+          ggsave( 
+              file.path( redu.figure.dir, 
+                  sprintf( "%s_%s__cluster.png", redu.figure.plot, 
+                      fcs.condition.label[ cond ] ) ), 
+              redu.plot, 
+              width = the.dmrd.figure.width, height = the.dmrd.figure.height 
+          )
+      }
+      
+      # plot each condition colored by sample
+      
+      for ( cond in fcs.condition )
+      {
+          dmrd.cond.idx <- which( dmrd.event.condition == cond )
+          
+          redu.cond.data <- redu.data[ dmrd.cond.idx, ]
+          dmrd.cond.event.sample <- dmrd.event.sample[ dmrd.cond.idx ]
+          
+          redu.plot <- plot.dimensionality.reduction( 
+              redu.cond.data[ , 1 ], redu.cond.data[ , 2 ], 
+              event.partition = dmrd.cond.event.sample, 
+              partition.label = flow.sample.label, 
+              partition.color = adjustcolor( flow.sample.color.single, 
+                  alpha.f = fcs.dmrd.color.alpha ), 
+              dmrd.lims = redu.lims, 
+              point.size = redu.figure.point.size, 
+              show.guide = TRUE 
+          )
+          
+          ggsave( 
+              file.path( redu.figure.dir, 
+                  sprintf( "%s_%s__sample.png", redu.figure.plot, 
+                      fcs.condition.label[ cond ] ) ), 
+              redu.plot, 
+              width = the.dmrd.figure.width, height = the.dmrd.figure.height 
+          )
+      }
+  }
+  
+  
+  # source( paste0( loc_scripts, "plot_dimensionality_reduction.r" ) )
+  # plots one dimensionality reduction figure
+  plot.dimensionality.reduction <- function( 
+      dmrd.x, dmrd.y, 
+      event.group = NULL, group.label = NULL, 
+      event.partition = NULL, partition.label = NULL, partition.color = NULL, 
+      event.level = NULL, 
+      dmrd.lims = NULL, dmrd.nrow = NULL, dmrd.ncol = NULL, 
+      point.size = NULL, show.guide = FALSE, guide.name = NULL 
+  )
+  {
+      if ( ! is.null( event.partition ) )
+      {
+          if ( is.null( event.group ) )
+              ggdf <- data.frame( dmrd.x, dmrd.y, event.partition )
+          else
+              ggdf <- data.frame( dmrd.x, dmrd.y, event.partition, event.group )
+          
+          if ( is.null( partition.label ) )
+              plot.label <- waiver()
+          else
+              plot.label <- partition.label
+          
+          if ( show.guide )
+              plot.guide <- guide_legend( keyheight = 0.8, 
+                  override.aes = list( size = fcs.dmrd.legend.point.size ), 
+                  label.theme = element_text( size = fcs.dmrd.legend.label.size ), 
+                  title = guide.name, title.position = "top", 
+                  title.theme = element_text( size = fcs.dmrd.legend.title.size ) )
+          else
+              plot.guide <- FALSE
+          
+          dmrd.plot <- ggplot( ggdf, aes( x = dmrd.x, 
+                  y = dmrd.y, color = event.partition ) ) + 
+              scale_color_manual( values = partition.color, labels = plot.label, 
+                  guide = plot.guide )
+      }
+      else if ( ! is.null( event.level ) )
+      {
+          if ( is.null( event.group ) )
+              ggdf <- data.frame( dmrd.x, dmrd.y, event.level )
+          else
+              ggdf <- data.frame( dmrd.x, dmrd.y, event.level, event.group )
+          
+          if ( show.guide )
+              plot.guide <- guide_colorbar( barwidth = 0.8, barheight = 10, 
+                  title = guide.name, title.position = "top", 
+                  title.theme = element_text( size = fcs.dmrd.legend.title.size ) )
+          else
+              plot.guide <- FALSE
+          
+          dmrd.plot <- ggplot( ggdf, aes( x = dmrd.x, y = dmrd.y, 
+                  color = event.level ) ) + 
+              scale_color_gradientn( colors = fcs.dmrd.density.palette, 
+                  labels = NULL, guide = plot.guide )
+      }
+      else
+      {
+          if ( is.null( event.group ) )
+              ggdf <- data.frame( dmrd.x, dmrd.y )
+          else
+              ggdf <- data.frame( dmrd.x, dmrd.y, event.group )
+          
+          dmrd.plot <- ggplot( ggdf, aes( x = dmrd.x, y = dmrd.y ) )
+      }
+      
+      if ( is.null( dmrd.lims ) ) {
+          dmrd.xy.max <- max( abs( c( dmrd.x, dmrd.y ) ) )
+          dmrd.lims <- dmrd.xy.max * c( -1, 1 )
+      }
+      
+      if ( is.null( point.size ) )
+          point.size <- 0.5
+      
+      dmrd.plot <- dmrd.plot + 
+          coord_fixed() + 
+          lims( x = dmrd.lims, y = dmrd.lims ) + 
+          geom_point( shape = 20, stroke = 0, size = point.size ) + 
+          theme_bw() + 
+          theme( axis.title = element_blank(), 
+              axis.text  = element_blank(), 
+              axis.ticks = element_blank(), 
+              panel.grid.major = element_blank(), 
+              panel.grid.minor = element_blank() )
+      
+      if ( ! is.null( event.group ) )
+      {
+          dmrd.plot <- dmrd.plot + 
+              facet_wrap( vars( event.group ), 
+                  labeller = as_labeller( group.label ), 
+                  nrow = dmrd.nrow, ncol = dmrd.ncol ) + 
+              theme( strip.background = element_rect( fill = "white" ), 
+                  strip.text = element_text( size = fcs.dmrd.group.title.size ) )
+      }
+      
+      dmrd.plot
+  }
+  
+}
+
+```
+
+
+#converting counts matrices to seurat object
+```{r}
+#reading in counts matrices and checking mitochondrial exprs percentage
+{
+  metadata <- read.delim(file = paste0(loc_data, "Allcells.meta.data.csv"), 
+                         sep = ",", stringsAsFactors = F)
+  rownames(metadata) <- metadata$Cell
+  metadata$Disease[which(metadata$Disease == "COVID19")] <- "COVID-19"
+  metadata$Disease[which(metadata$Disease == "control")] <- "Non-COVID-19"
+  
+  counts_matrix <- readRDS(file = paste0(loc_data, "Allcells.counts.rds"))
+  
+  seurat_all <- CreateSeuratObject(counts = counts_matrix, 
+                                  project = "Covid_dataset", 
+                                  meta.data = metadata)
+  
+  #checking percentage mitochondrial gene -- none found
+  seurat_all <- PercentageFeatureSet(object = seurat_all, 
+                                     pattern = "^mt-", 
+                                     col.name = "percent_mt_genes")
+  
+  #log scaling "data" slot
+  seurat_all@assays$RNA@data <- log1p(seurat_all@assays$RNA@data)
+  
+  #finding variable features and scaling data
+  seurat_all <- FindVariableFeatures(object = seurat_all)
+  seurat_all <- ScaleData(object = seurat_all)
+  #running pca
+  seurat_all <- RunPCA(seurat_all, npcs = 100)
+  #elbow plot
+  ElbowPlot(object = seurat_all, ndims = 100) + 
+    geom_hline(yintercept = 1)
+  
+  #saving the full object
+  saveRDS(object = seurat_all, 
+          file = paste0(loc_seurat_results, "seurat_all.rds"), 
+          compress = T)
+  
+}
+
+#performing t-SNE
+{
+  seurat_all <- readRDS(file = paste0(loc_seurat_results, "seurat_all.rds"))
+  
+  ##testing out t-SNE
+  seurat_all <- FindVariableFeatures(object = seurat_all)
+  seurat_all <- ScaleData(object = seurat_all)
+  #running pca
+  seurat_all <- RunPCA(seurat_all, npcs = 100)
+  #elbow plot
+  ElbowPlot(object = seurat_all, ndims = 100) + 
+    geom_hline(yintercept = 1)
+  #run t-sne
+  seurat_all <- RunTSNE(object = seurat_all, 
+                        dims = 1:75, 
+                        seed.use = 42)
+  seurat_all$PatientGroup <- paste0(seurat_all$Disease, "_",
+                                    seurat_all$PatientType)
+  
+  #saving the full object
+  saveRDS(object = seurat_all, 
+          file = paste0(loc_seurat_results, "seurat_all.rds"), 
+          compress = T)
+  
+}
+
+#splitting seurat object into 8 cell groups
+{
+  seurat_all <- readRDS(file = paste0(loc_seurat_results, "seurat_all.rds"))
+  
+  #cell counts for patient groups
+  table(seurat_all@meta.data$PatientType, seurat_all@meta.data$Disease)
+  
+  #cell counts for cell types
+  table(seurat_all@meta.data$PatientGroup, seurat_all@meta.data$CellType)
+  
+  #cell counts for cell types
+  table(seurat_all@meta.data$PatientGroup, seurat_all@meta.data$PatientNumber)
+  
+  
+  #getting the eight cell types patient groups
+  seurat_monomacro <- subset(x = seurat_all, 
+                             subset = CellType %in% 
+                               c("Alveolar_macrophage", "Md_macrophage", 
+                                 "Monocyte"))
+  seurat_cd8 <- subset(x = seurat_all,
+                       subset = CellType %in% c("CD8_Tcell"))
+  seurat_cd4 <- subset(x = seurat_all,
+                       subset = CellType %in% c("CD4_Tcell"))
+  seurat_nk <- subset(x = seurat_all,
+                       subset = CellType %in% c("NK"))
+  seurat_neut <- subset(x = seurat_all,
+                        subset = CellType %in% c("Neutrophil"))
+  seurat_dend <- subset(x = seurat_all,
+                        subset = CellType %in% c("cDC"))
+  seurat_bcell <- subset(x = seurat_all,
+                        subset = CellType %in% c("B_cell"))
+  seurat_epith <- subset(x = seurat_all,
+                         subset = CellType %in% c("AT2", "Basal", "Ciliated", 
+                                                  "Inflammatory", "Secretory", 
+                                                  "Squamous_KRT13"))
+  
+  ##plot t-sne first to check if the loaded objects have already been processed via below
+  
+  ## t-SNE for seurat_monomacro
+  {
+    seurat_monomacro <- FindVariableFeatures(object = seurat_monomacro)
+    seurat_monomacro <- ScaleData(object = seurat_monomacro)
+    seurat_monomacro <- RunPCA(object = seurat_monomacro, npcs = 100)
+    ElbowPlot(object = seurat_monomacro, ndims = 100) + 
+      geom_hline(yintercept = 1)
+    seurat_monomacro <- RunTSNE(object = seurat_monomacro, 
+                                dims = 1:75, 
+                                seed.use = 42)
+    DimPlot(object = seurat_monomacro, reduction = "tsne", group.by = "Disease") + 
+      labs(title = "Monocytes and Macrophages") + 
+      xlab(label = "Dimension 1") + ylab(label = "Dimension 2")
+    
+    saveRDS(object = seurat_monomacro, 
+            file = paste0(loc_seurat_results, "seurat_monomacro.rds"), 
+            compress = T)
+  }
+  
+  ## t-SNE for seurat_cd8
+  {
+    seurat_cd8 <- FindVariableFeatures(object = seurat_cd8)
+    seurat_cd8 <- ScaleData(object = seurat_cd8)
+    seurat_cd8 <- RunPCA(object = seurat_cd8, npcs = 100)
+    ElbowPlot(object = seurat_cd8, ndims = 100) + 
+      geom_hline(yintercept = 1)
+    seurat_cd8 <- RunTSNE(object = seurat_cd8, 
+                                dims = 1:100, 
+                                seed.use = 42)
+    DimPlot(object = seurat_cd8, reduction = "tsne", group.by = "Disease") + 
+      labs(title = "CD8+ cells") + 
+      xlab(label = "Dimension 1") + ylab(label = "Dimension 2")
+    
+    saveRDS(object = seurat_cd8, 
+            file = paste0(loc_seurat_results, "seurat_cd8.rds"), 
+            compress = T)
+  }
+  
+  ## t-SNE for seurat_bcell
+  {
+    seurat_bcell <- FindVariableFeatures(object = seurat_bcell)
+    seurat_bcell <- ScaleData(object = seurat_bcell)
+    seurat_bcell <- RunPCA(object = seurat_bcell, npcs = 100)
+    ElbowPlot(object = seurat_bcell, ndims = 100) + 
+      geom_hline(yintercept = 1)
+    seurat_bcell <- RunTSNE(object = seurat_bcell, 
+                                dims = 1:75, 
+                                seed.use = 42)
+    DimPlot(object = seurat_bcell, reduction = "tsne", group.by = "Disease") + 
+      labs(title = "B cells") + 
+      xlab(label = "Dimension 1") + ylab(label = "Dimension 2")
+    
+    saveRDS(object = seurat_bcell, 
+            file = paste0(loc_seurat_results, "seurat_bcell.rds"), 
+            compress = T)
+  }
+  
+  ## t-SNE for seurat_dend
+  {
+    seurat_dend <- FindVariableFeatures(object = seurat_dend)
+    seurat_dend <- ScaleData(object = seurat_dend)
+    seurat_dend <- RunPCA(object = seurat_dend, npcs = 100)
+    ElbowPlot(object = seurat_dend, ndims = 100) + 
+      geom_hline(yintercept = 1)
+    seurat_dend <- RunTSNE(object = seurat_dend, 
+                                dims = 1:100, 
+                                seed.use = 42)
+    DimPlot(object = seurat_dend, reduction = "tsne", group.by = "Disease") + 
+      labs(title = "Dendritic cells") + 
+      xlab(label = "Dimension 1") + ylab(label = "Dimension 2")
+    
+    saveRDS(object = seurat_dend, 
+            file = paste0(loc_seurat_results, "seurat_dend.rds"), 
+            compress = T)
+  }
+  
+  ## t-SNE for seurat_epith
+  {
+    seurat_epith <- FindVariableFeatures(object = seurat_epith)
+    seurat_epith <- ScaleData(object = seurat_epith)
+    seurat_epith <- RunPCA(object = seurat_epith, npcs = 100)
+    ElbowPlot(object = seurat_epith, ndims = 100) + 
+      geom_hline(yintercept = 1)
+    seurat_epith <- RunTSNE(object = seurat_epith, 
+                                dims = 1:75, 
+                                seed.use = 42)
+    DimPlot(object = seurat_epith, reduction = "tsne", group.by = "Disease") + 
+      labs(title = "Epithelial compartment") + 
+      xlab(label = "Dimension 1") + ylab(label = "Dimension 2")
+    
+    saveRDS(object = seurat_epith, 
+            file = paste0(loc_seurat_results, "seurat_epith.rds"), 
+            compress = T)
+  }
+  
+  ## t-SNE for seurat_neut
+  {
+    seurat_neut <- FindVariableFeatures(object = seurat_neut)
+    seurat_neut <- ScaleData(object = seurat_neut)
+    seurat_neut <- RunPCA(object = seurat_neut, npcs = 100)
+    ElbowPlot(object = seurat_neut, ndims = 100) + 
+      geom_hline(yintercept = 1)
+    seurat_neut <- RunTSNE(object = seurat_neut, 
+                                dims = 1:75, 
+                                seed.use = 42)
+    DimPlot(object = seurat_neut, reduction = "tsne", group.by = "Disease") + 
+      labs(title = "Neutrophils") + 
+      xlab(label = "Dimension 1") + ylab(label = "Dimension 2")
+    
+    saveRDS(object = seurat_neut, 
+            file = paste0(loc_seurat_results, "seurat_neut.rds"), 
+            compress = T)
+  }
+  
+  ## t-SNE for seurat_tnk
+  {
+    seurat_tnk <- FindVariableFeatures(object = seurat_tnk)
+    seurat_tnk <- ScaleData(object = seurat_tnk)
+    seurat_tnk <- RunPCA(object = seurat_tnk, npcs = 100)
+    ElbowPlot(object = seurat_tnk, ndims = 100) + 
+      geom_hline(yintercept = 1)
+    seurat_tnk <- RunTSNE(object = seurat_tnk, 
+                                dims = 1:75, 
+                                seed.use = 42)
+    DimPlot(object = seurat_tnk, reduction = "tsne", group.by = "Disease") + 
+      labs(title = "T and NK cells") + 
+      xlab(label = "Dimension 1") + ylab(label = "Dimension 2")
+    
+    saveRDS(object = seurat_tnk, 
+            file = paste0(loc_seurat_results, "seurat_tnk.rds"), 
+            compress = T)
+  }
+  
+  ## t-SNE for seurat_cd4
+  {
+    seurat_cd4 <- FindVariableFeatures(object = seurat_cd4)
+    seurat_cd4 <- ScaleData(object = seurat_cd4)
+    seurat_cd4 <- RunPCA(object = seurat_cd4, npcs = 100)
+    ElbowPlot(object = seurat_cd4, ndims = 100) + 
+      geom_hline(yintercept = 1)
+    seurat_cd4 <- RunTSNE(object = seurat_cd4, 
+                                dims = 1:100, 
+                                seed.use = 42)
+    DimPlot(object = seurat_cd4, reduction = "tsne", group.by = "Disease") + 
+      labs(title = "CD4+ cells") + 
+      xlab(label = "Dimension 1") + ylab(label = "Dimension 2")
+    
+    saveRDS(object = seurat_cd4, 
+            file = paste0(loc_seurat_results, "seurat_cd4.rds"), 
+            compress = T)
+  }
+  
+  ## t-SNE for seurat_nk
+  {
+    seurat_nk <- FindVariableFeatures(object = seurat_nk)
+    seurat_nk <- ScaleData(object = seurat_nk)
+    seurat_nk <- RunPCA(object = seurat_nk, npcs = 100)
+    ElbowPlot(object = seurat_nk, ndims = 100) + 
+      geom_hline(yintercept = 1)
+    seurat_nk <- RunTSNE(object = seurat_nk, 
+                                dims = 1:100, 
+                                seed.use = 42)
+    DimPlot(object = seurat_nk, reduction = "tsne", group.by = "Disease") + 
+      labs(title = "NK cells") + 
+      xlab(label = "Dimension 1") + ylab(label = "Dimension 2")
+    
+    saveRDS(object = seurat_nk, 
+            file = paste0(loc_seurat_results, "seurat_nk.rds"), 
+            compress = T)
+  }
+  
+}
+
+```
+
+
+##cross entropy tests
+```{r}
+
+#loading data
+{
+  seurat_all <- readRDS(file = paste0(loc_seurat_results, "seurat_all.rds"))
+}
+
+# calculate cross-entropy test for tsne by sample
+{
+  
+  #testing it for samples/subjects/mice as the condition group
+  fcs.condition <- as.character(sort(unique(seurat_all@meta.data$orig.ident)))
+  fcs.condition.n <- length(fcs.condition)
+  fcs.condition.label <- fcs.condition
+  names(fcs.condition.label) <- fcs.condition
+  
+  #some parameters copied as is from Carlos' script
+  {
+    # graphics parameters
+    fcs.color.pool <- c( 
+        brewer.pal( 8, "Set1" )[ -6 ], 
+        brewer.pal( 7, "Set2" )[ c( 1, 3, 6 ) ], 
+        adjustcolor( brewer.pal( 8, "Set1" )[ -6 ], 
+            red.f = 0.9, green.f = 0.8, blue.f = 0.7 ), 
+        adjustcolor( brewer.pal( 7, "Set2" )[ c( 1, 3, 6 ) ], 
+            red.f = 0.9, green.f = 0.8, blue.f = 0.7 ), 
+        adjustcolor( brewer.pal( 8, "Set1" )[ -6 ], 
+            red.f = 0.8, green.f = 0.6, blue.f = 0.5 ), 
+        adjustcolor( brewer.pal( 7, "Set2" )[ c( 1, 3, 6 ) ], 
+            red.f = 0.8, green.f = 0.6, blue.f = 0.5 ), 
+        adjustcolor( brewer.pal( 8, "Set1" )[ -6 ], 
+            red.f = 0.3, green.f = 0.3, blue.f = 0.3 ), 
+        adjustcolor( brewer.pal( 7, "Set2" )[ c( 1, 3, 6 ) ], 
+            red.f = 0.3, green.f = 0.3, blue.f = 0.3 ) )
+    fcs.color.pool.n <- length( fcs.color.pool )
+    
+    fcs.line.type.pool <- 1:6
+    fcs.line.type.pool.n <- length( fcs.line.type.pool )
+    
+    fcs.condition.color <- rep( 
+        fcs.color.pool, 
+        ceiling( fcs.condition.n / fcs.color.pool.n ) 
+    )[ 1 : fcs.condition.n ]
+    names( fcs.condition.color ) <- fcs.condition
+    
+    fcs.condition.line.type <- rep( 
+        fcs.line.type.pool, 
+        ceiling( fcs.condition.n / fcs.line.type.pool.n ) 
+    )[ 1 : fcs.condition.n ]
+    names( fcs.condition.line.type ) <- fcs.condition
+    
+    fcs.ce.diff.figure.cdf.width <- 1200
+    fcs.ce.diff.figure.cdf.height <- 800
+    
+    fcs.ce.diff.figure.dendrogram.width <- 1200
+    fcs.ce.diff.figure.dendrogram.height <- 800
+    
+    fcs.ce.diff.figure.font.size <- 2
+    fcs.ce.diff.figure.line.width <- 3
+    
+    fcs.ce.diff.figure.cdf.resolution <- 500
+    fcs.ce.diff.figure.cdf.all.color <- "black"
+    fcs.ce.diff.figure.cdf.all.label <- "All"
+  }
+  
+  #global switches/parameters being used in the ce.diff.test.tsne function
+  {
+    fcs.use.cached.results <- TRUE
+    fcs.ce.diff.tsne.perplexity.factor <- 3
+    fcs.tsne.perplexity <- 30
+    
+    fcs.ce.diff.tsne.cache.file.path <- 
+      paste0( loc_tsne_diff, "all/tsne_all_sample_cache.dat")
+  }
+  
+  set.seed.here( 42, "calculate cross-entropy test for tsne" )
+  
+  #only select PCs used for calculating t-SNE
+  dmrd.data <- seurat_all@reductions$pca@cell.embeddings[,1:40]
+  tsne.data <- seurat_all@reductions$tsne@cell.embeddings
+  
+  dmrd.event.condition <- gsub(pattern = "_.*$", 
+                               replacement = "", 
+                               x = rownames(dmrd.data))
+  
+  gc()
+  ce.diff.test.tsne.res.sample <- ce.diff.test.tsne(
+    dmrd.data, tsne.data, 
+    factor(x = dmrd.event.condition, 
+           levels = unique(dmrd.event.condition)), 
+    partition.label = fcs.condition.label, 
+    partition.color = fcs.condition.color, # needs fcs.condition.n
+    partition.line.type = fcs.condition.line.type, 
+    base.test = "ks", #fcs.ce.diff.base.test, 
+    base.dist = "ks", #fcs.ce.diff.base.dist, 
+    prob.sample.n = NULL, #fcs.ce.diff.prob.sample.n, 
+    dendrogram.order.weight = c(1:fcs.condition.n), #fcs.ce.diff.figure.dendrogram.weight.condition, 
+    result = paste0( loc_tsne_diff, "all/",  
+                        sprintf( "%s_sample.txt", 
+                                 "tsne_ce_diff_result" #fcs.ce.diff.tsne.result 
+                                 ) ), 
+    cdf.figure = paste0( loc_tsne_diff, "all/",  
+                            sprintf( "%s_sample.png", 
+                                     "tsne_ce_diff_cdf" #fcs.ce.diff.tsne.figure.cdf 
+                                     ) ), 
+    dendrogram.figure = paste0( loc_tsne_diff, "all/",  
+          sprintf( "%s_sample.png", 
+                   "tsne_ce_diff_dendrogram" #fcs.ce.diff.tsne.figure.dendrogram 
+                   ) ) 
+    )
+  
+}
+
+# calculate cross-entropy test for tsne by disease
+{
+  
+  #testing it for samples/subjects/mice as the condition group
+  fcs.condition <- as.character(sort(unique(seurat_all@meta.data$Disease)))
+  fcs.condition.n <- length(fcs.condition)
+  fcs.condition.label <- fcs.condition
+  names(fcs.condition.label) <- fcs.condition
+  
+  #some parameters copied as is from Carlos' script
+  {
+    # graphics parameters
+    fcs.color.pool <- c( 
+        brewer.pal( 8, "Set1" )[ -6 ], 
+        brewer.pal( 7, "Set2" )[ c( 1, 3, 6 ) ], 
+        adjustcolor( brewer.pal( 8, "Set1" )[ -6 ], 
+            red.f = 0.9, green.f = 0.8, blue.f = 0.7 ), 
+        adjustcolor( brewer.pal( 7, "Set2" )[ c( 1, 3, 6 ) ], 
+            red.f = 0.9, green.f = 0.8, blue.f = 0.7 ), 
+        adjustcolor( brewer.pal( 8, "Set1" )[ -6 ], 
+            red.f = 0.8, green.f = 0.6, blue.f = 0.5 ), 
+        adjustcolor( brewer.pal( 7, "Set2" )[ c( 1, 3, 6 ) ], 
+            red.f = 0.8, green.f = 0.6, blue.f = 0.5 ), 
+        adjustcolor( brewer.pal( 8, "Set1" )[ -6 ], 
+            red.f = 0.3, green.f = 0.3, blue.f = 0.3 ), 
+        adjustcolor( brewer.pal( 7, "Set2" )[ c( 1, 3, 6 ) ], 
+            red.f = 0.3, green.f = 0.3, blue.f = 0.3 ) )
+    fcs.color.pool.n <- length( fcs.color.pool )
+    
+    fcs.line.type.pool <- 1:6
+    fcs.line.type.pool.n <- length( fcs.line.type.pool )
+    
+    fcs.condition.color <- rep( 
+        fcs.color.pool, 
+        ceiling( fcs.condition.n / fcs.color.pool.n ) 
+    )[ 1 : fcs.condition.n ]
+    names( fcs.condition.color ) <- fcs.condition
+    
+    fcs.condition.line.type <- rep( 
+        fcs.line.type.pool, 
+        ceiling( fcs.condition.n / fcs.line.type.pool.n ) 
+    )[ 1 : fcs.condition.n ]
+    names( fcs.condition.line.type ) <- fcs.condition
+    
+    fcs.ce.diff.figure.cdf.width <- 1200
+    fcs.ce.diff.figure.cdf.height <- 800
+    
+    fcs.ce.diff.figure.dendrogram.width <- 1200
+    fcs.ce.diff.figure.dendrogram.height <- 800
+    
+    fcs.ce.diff.figure.font.size <- 2
+    fcs.ce.diff.figure.line.width <- 3
+    
+    fcs.ce.diff.figure.cdf.resolution <- 500
+    fcs.ce.diff.figure.cdf.all.color <- "black"
+    fcs.ce.diff.figure.cdf.all.label <- "All"
+  }
+  
+  #global switches/parameters being used in the ce.diff.test.tsne function
+  {
+    fcs.use.cached.results <- TRUE
+    fcs.ce.diff.tsne.perplexity.factor <- 3
+    fcs.tsne.perplexity <- 30
+    
+    fcs.ce.diff.tsne.cache.file.path <- 
+      paste0( loc_tsne_diff, "all/tsne_all_disease_cache.dat")
+  }
+  
+  set.seed.here( 42, "calculate cross-entropy test for tsne" )
+  
+  #only select PCs used for calculating t-SNE
+  dmrd.data <- seurat_all@reductions$pca@cell.embeddings[,1:40]
+  tsne.data <- seurat_all@reductions$tsne@cell.embeddings
+  
+  dmrd.event.condition <- gsub(pattern = "_.*$", 
+                               replacement = "", 
+                               x = rownames(dmrd.data))
+  
+  gc()
+  ce.diff.test.tsne.res.disease <- ce.diff.test.tsne(
+    dmrd.data, tsne.data, 
+    factor(x = seurat_all@meta.data$Disease, 
+           levels = unique(seurat_all@meta.data$Disease)), 
+    partition.label = fcs.condition.label, 
+    partition.color = fcs.condition.color, # needs fcs.condition.n
+    partition.line.type = fcs.condition.line.type, 
+    base.test = "ks", #fcs.ce.diff.base.test, 
+    base.dist = "ks", #fcs.ce.diff.base.dist, 
+    prob.sample.n = NULL, #fcs.ce.diff.prob.sample.n, 
+    dendrogram.order.weight = c(1:fcs.condition.n), #fcs.ce.diff.figure.dendrogram.weight.condition, 
+    result = paste0( loc_tsne_diff, "all/",  
+                        sprintf( "%s_disease.txt", 
+                                 "tsne_ce_diff_result" #fcs.ce.diff.tsne.result 
+                                 ) ), 
+    cdf.figure = paste0( loc_tsne_diff, "all/",  
+                            sprintf( "%s_disease.png", 
+                                     "tsne_ce_diff_cdf" #fcs.ce.diff.tsne.figure.cdf 
+                                     ) ), 
+    dendrogram.figure = paste0( loc_tsne_diff, "all/",  
+          sprintf( "%s_disease.png", 
+                   "tsne_ce_diff_dendrogram" #fcs.ce.diff.tsne.figure.dendrogram 
+                   ) ) 
+    )
+  
+}
+
+# calculate cross-entropy test for tsne by patient group
+{
+  
+  #testing it for samples/subjects/mice as the condition group
+  fcs.condition <- as.character(sort(unique(seurat_all@meta.data$PatientGroup)))
+  fcs.condition.n <- length(fcs.condition)
+  fcs.condition.label <- fcs.condition
+  names(fcs.condition.label) <- fcs.condition
+  
+  #some parameters copied as is from Carlos' script
+  {
+    # graphics parameters
+    fcs.color.pool <- c( 
+        brewer.pal( 8, "Set1" )[ -6 ], 
+        brewer.pal( 7, "Set2" )[ c( 1, 3, 6 ) ], 
+        adjustcolor( brewer.pal( 8, "Set1" )[ -6 ], 
+            red.f = 0.9, green.f = 0.8, blue.f = 0.7 ), 
+        adjustcolor( brewer.pal( 7, "Set2" )[ c( 1, 3, 6 ) ], 
+            red.f = 0.9, green.f = 0.8, blue.f = 0.7 ), 
+        adjustcolor( brewer.pal( 8, "Set1" )[ -6 ], 
+            red.f = 0.8, green.f = 0.6, blue.f = 0.5 ), 
+        adjustcolor( brewer.pal( 7, "Set2" )[ c( 1, 3, 6 ) ], 
+            red.f = 0.8, green.f = 0.6, blue.f = 0.5 ), 
+        adjustcolor( brewer.pal( 8, "Set1" )[ -6 ], 
+            red.f = 0.3, green.f = 0.3, blue.f = 0.3 ), 
+        adjustcolor( brewer.pal( 7, "Set2" )[ c( 1, 3, 6 ) ], 
+            red.f = 0.3, green.f = 0.3, blue.f = 0.3 ) )
+    fcs.color.pool.n <- length( fcs.color.pool )
+    
+    fcs.line.type.pool <- 1:6
+    fcs.line.type.pool.n <- length( fcs.line.type.pool )
+    
+    fcs.condition.color <- rep( 
+        fcs.color.pool, 
+        ceiling( fcs.condition.n / fcs.color.pool.n ) 
+    )[ 1 : fcs.condition.n ]
+    names( fcs.condition.color ) <- fcs.condition
+    
+    fcs.condition.line.type <- rep( 
+        fcs.line.type.pool, 
+        ceiling( fcs.condition.n / fcs.line.type.pool.n ) 
+    )[ 1 : fcs.condition.n ]
+    names( fcs.condition.line.type ) <- fcs.condition
+    
+    fcs.ce.diff.figure.cdf.width <- 1200
+    fcs.ce.diff.figure.cdf.height <- 800
+    
+    fcs.ce.diff.figure.dendrogram.width <- 1200
+    fcs.ce.diff.figure.dendrogram.height <- 800
+    
+    fcs.ce.diff.figure.font.size <- 2
+    fcs.ce.diff.figure.line.width <- 3
+    
+    fcs.ce.diff.figure.cdf.resolution <- 500
+    fcs.ce.diff.figure.cdf.all.color <- "black"
+    fcs.ce.diff.figure.cdf.all.label <- "All"
+  }
+  
+  #global switches/parameters being used in the ce.diff.test.tsne function
+  {
+    fcs.use.cached.results <- TRUE
+    fcs.ce.diff.tsne.perplexity.factor <- 3
+    fcs.tsne.perplexity <- 30
+    
+    fcs.ce.diff.tsne.cache.file.path <- 
+      paste0( loc_tsne_diff, "all/tsne_all_group_cache.dat")
+  }
+  
+  set.seed.here( 42, "calculate cross-entropy test for tsne" )
+  
+  #only select PCs used for calculating t-SNE
+  dmrd.data <- seurat_all@reductions$pca@cell.embeddings[,1:40]
+  tsne.data <- seurat_all@reductions$tsne@cell.embeddings
+  
+  dmrd.event.condition <- gsub(pattern = "_.*$", 
+                               replacement = "", 
+                               x = rownames(dmrd.data))
+  
+  gc()
+  ce.diff.test.tsne.res.group <- ce.diff.test.tsne(
+    dmrd.data, tsne.data, 
+    factor(x = seurat_all@meta.data$PatientGroup,
+           levels = unique(seurat_all@meta.data$PatientGroup)),
+    partition.label = fcs.condition.label, 
+    partition.color = fcs.condition.color, # needs fcs.condition.n
+    partition.line.type = fcs.condition.line.type, 
+    base.test = "ks", #fcs.ce.diff.base.test, 
+    base.dist = "ks", #fcs.ce.diff.base.dist, 
+    prob.sample.n = NULL, #fcs.ce.diff.prob.sample.n, 
+    dendrogram.order.weight = c(1:fcs.condition.n), #fcs.ce.diff.figure.dendrogram.weight.condition, 
+    result = paste0( loc_tsne_diff, "all/",  
+                        sprintf( "%s_group.txt", 
+                                 "tsne_ce_diff_result" #fcs.ce.diff.tsne.result 
+                                 ) ), 
+    cdf.figure = paste0( loc_tsne_diff, "all/",  
+                            sprintf( "%s_group.png", 
+                                     "tsne_ce_diff_cdf" #fcs.ce.diff.tsne.figure.cdf 
+                                     ) ), 
+    dendrogram.figure = paste0( loc_tsne_diff, "all/",  
+          sprintf( "%s_group.png", 
+                   "tsne_ce_diff_dendrogram" #fcs.ce.diff.tsne.figure.dendrogram 
+                   ) ) 
+    )
+  
+}
+
+# calculate cross-entropy test for tsne by clustering
+{
+  
+  #testing it for samples/subjects/mice as the condition group
+  fcs.condition <- as.character(sort(unique(seurat_all@meta.data$kmeans12)))
+  fcs.condition.n <- length(fcs.condition)
+  fcs.condition.label <- fcs.condition
+  names(fcs.condition.label) <- fcs.condition
+  
+  #some parameters copied as is from Carlos' script
+  {
+    # graphics parameters
+    fcs.color.pool <- c( 
+        brewer.pal( 8, "Set1" )[ -6 ], 
+        brewer.pal( 7, "Set2" )[ c( 1, 3, 6 ) ], 
+        adjustcolor( brewer.pal( 8, "Set1" )[ -6 ], 
+            red.f = 0.9, green.f = 0.8, blue.f = 0.7 ), 
+        adjustcolor( brewer.pal( 7, "Set2" )[ c( 1, 3, 6 ) ], 
+            red.f = 0.9, green.f = 0.8, blue.f = 0.7 ), 
+        adjustcolor( brewer.pal( 8, "Set1" )[ -6 ], 
+            red.f = 0.8, green.f = 0.6, blue.f = 0.5 ), 
+        adjustcolor( brewer.pal( 7, "Set2" )[ c( 1, 3, 6 ) ], 
+            red.f = 0.8, green.f = 0.6, blue.f = 0.5 ), 
+        adjustcolor( brewer.pal( 8, "Set1" )[ -6 ], 
+            red.f = 0.3, green.f = 0.3, blue.f = 0.3 ), 
+        adjustcolor( brewer.pal( 7, "Set2" )[ c( 1, 3, 6 ) ], 
+            red.f = 0.3, green.f = 0.3, blue.f = 0.3 ) )
+    fcs.color.pool.n <- length( fcs.color.pool )
+    
+    fcs.line.type.pool <- 1:6
+    fcs.line.type.pool.n <- length( fcs.line.type.pool )
+    
+    fcs.condition.color <- rep( 
+        fcs.color.pool, 
+        ceiling( fcs.condition.n / fcs.color.pool.n ) 
+    )[ 1 : fcs.condition.n ]
+    names( fcs.condition.color ) <- fcs.condition
+    
+    fcs.condition.line.type <- rep( 
+        fcs.line.type.pool, 
+        ceiling( fcs.condition.n / fcs.line.type.pool.n ) 
+    )[ 1 : fcs.condition.n ]
+    names( fcs.condition.line.type ) <- fcs.condition
+    
+    fcs.ce.diff.figure.cdf.width <- 1200
+    fcs.ce.diff.figure.cdf.height <- 800
+    
+    fcs.ce.diff.figure.dendrogram.width <- 1200
+    fcs.ce.diff.figure.dendrogram.height <- 800
+    
+    fcs.ce.diff.figure.font.size <- 2
+    fcs.ce.diff.figure.line.width <- 3
+    
+    fcs.ce.diff.figure.cdf.resolution <- 500
+    fcs.ce.diff.figure.cdf.all.color <- "black"
+    fcs.ce.diff.figure.cdf.all.label <- "All"
+  }
+  
+  #global switches/parameters being used in the ce.diff.test.tsne function
+  {
+    fcs.use.cached.results <- TRUE
+    fcs.ce.diff.tsne.perplexity.factor <- 3
+    fcs.tsne.perplexity <- 30
+    
+    fcs.ce.diff.tsne.cache.file.path <- 
+      paste0( loc_tsne_diff, "all/tsne_all_group_cache.dat")
+  }
+  
+  set.seed.here( 42, "calculate cross-entropy test for tsne" )
+  
+  #only select PCs used for calculating t-SNE
+  dmrd.data <- seurat_all@reductions$pca@cell.embeddings[,1:40]
+  tsne.data <- seurat_all@reductions$tsne@cell.embeddings
+  
+  dmrd.event.condition <- gsub(pattern = "_.*$", 
+                               replacement = "", 
+                               x = rownames(dmrd.data))
+  
+  gc()
+  ce.diff.test.tsne.res.group <- ce.diff.test.tsne(
+    dmrd.data, tsne.data, 
+    factor(x = seurat_all@meta.data$kmeans12,
+           levels = unique(seurat_all@meta.data$kmeans12)),
+    partition.label = fcs.condition.label, 
+    partition.color = fcs.condition.color, # needs fcs.condition.n
+    partition.line.type = fcs.condition.line.type, 
+    base.test = "ks", #fcs.ce.diff.base.test, 
+    base.dist = "ks", #fcs.ce.diff.base.dist, 
+    prob.sample.n = NULL, #fcs.ce.diff.prob.sample.n, 
+    dendrogram.order.weight = c(1:fcs.condition.n), #fcs.ce.diff.figure.dendrogram.weight.condition, 
+    result = paste0( loc_tsne_diff, "all/",  
+                        sprintf( "%s_cluster_kmeans.txt", 
+                                 "tsne_ce_diff_result" #fcs.ce.diff.tsne.result 
+                                 ) ), 
+    cdf.figure = paste0( loc_tsne_diff, "all/",  
+                            sprintf( "%s_cluster_kmeans.png", 
+                                     "tsne_ce_diff_cdf" #fcs.ce.diff.tsne.figure.cdf 
+                                     ) ), 
+    dendrogram.figure = paste0( loc_tsne_diff, "all/",  
+          sprintf( "%s_cluster_kmeans.png", 
+                   "tsne_ce_diff_dendrogram" #fcs.ce.diff.tsne.figure.dendrogram 
+                   ) ) 
+    )
+  
+}
+
+
+```
+
+
+##cross entropy tests for the eight cell groups
+```{r}
+
+#loading data
+{
+  seurat_monomacro <-
+    readRDS(file = paste0(loc_seurat_results, "seurat_monomacro.rds"))
+  seurat_cd8 <-
+    readRDS(file = paste0(loc_seurat_results, "seurat_cd8.rds"))
+  seurat_tnk <-
+    readRDS(file = paste0(loc_seurat_results, "seurat_tnk.rds"))
+  seurat_neut <-
+    readRDS(file = paste0(loc_seurat_results, "seurat_neut.rds"))
+  seurat_dend <-
+    readRDS(file = paste0(loc_seurat_results, "seurat_dend.rds"))
+  seurat_bcell <-
+    readRDS(file = paste0(loc_seurat_results, "seurat_bcell.rds"))
+  seurat_epith <-
+    readRDS(file = paste0(loc_seurat_results, "seurat_epith.rds"))
+  seurat_cd4 <-
+    readRDS(file = paste0(loc_seurat_results, "seurat_cd4.rds"))
+  seurat_nk <-
+    readRDS(file = paste0(loc_seurat_results, "seurat_nk.rds"))
+}
+
+## for monomacro
+# calculate cross-entropy test for tsne by disease
+{
+  
+  seurat_monomacro_orig <- seurat_monomacro
+  
+  #testing it for samples/subjects/mice as the condition group
+  fcs.condition <- as.character(sort(unique(seurat_monomacro@meta.data$Disease)))
+  fcs.condition.n <- length(fcs.condition)
+  fcs.condition.label <- fcs.condition
+  names(fcs.condition.label) <- fcs.condition
+  
+  #some parameters copied as is from Carlos' script
+  {
+    # graphics parameters
+    fcs.color.pool <- c( 
+        brewer.pal( 8, "Set1" )[ -6 ], 
+        brewer.pal( 7, "Set2" )[ c( 1, 3, 6 ) ], 
+        adjustcolor( brewer.pal( 8, "Set1" )[ -6 ], 
+            red.f = 0.9, green.f = 0.8, blue.f = 0.7 ), 
+        adjustcolor( brewer.pal( 7, "Set2" )[ c( 1, 3, 6 ) ], 
+            red.f = 0.9, green.f = 0.8, blue.f = 0.7 ), 
+        adjustcolor( brewer.pal( 8, "Set1" )[ -6 ], 
+            red.f = 0.8, green.f = 0.6, blue.f = 0.5 ), 
+        adjustcolor( brewer.pal( 7, "Set2" )[ c( 1, 3, 6 ) ], 
+            red.f = 0.8, green.f = 0.6, blue.f = 0.5 ), 
+        adjustcolor( brewer.pal( 8, "Set1" )[ -6 ], 
+            red.f = 0.3, green.f = 0.3, blue.f = 0.3 ), 
+        adjustcolor( brewer.pal( 7, "Set2" )[ c( 1, 3, 6 ) ], 
+            red.f = 0.3, green.f = 0.3, blue.f = 0.3 ) )
+    fcs.color.pool.n <- length( fcs.color.pool )
+    
+    fcs.line.type.pool <- 1:6
+    fcs.line.type.pool.n <- length( fcs.line.type.pool )
+    
+    fcs.condition.color <- rep( 
+        fcs.color.pool, 
+        ceiling( fcs.condition.n / fcs.color.pool.n ) 
+    )[ 1 : fcs.condition.n ]
+    names( fcs.condition.color ) <- fcs.condition
+    
+    fcs.condition.line.type <- rep( 
+        fcs.line.type.pool, 
+        ceiling( fcs.condition.n / fcs.line.type.pool.n ) 
+    )[ 1 : fcs.condition.n ]
+    names( fcs.condition.line.type ) <- fcs.condition
+    
+    fcs.ce.diff.figure.cdf.width <- 1200
+    fcs.ce.diff.figure.cdf.height <- 800
+    
+    fcs.ce.diff.figure.dendrogram.width <- 1200
+    fcs.ce.diff.figure.dendrogram.height <- 800
+    
+    fcs.ce.diff.figure.font.size <- 2
+    fcs.ce.diff.figure.line.width <- 3
+    
+    fcs.ce.diff.figure.cdf.resolution <- 500
+    fcs.ce.diff.figure.cdf.all.color <- "black"
+    fcs.ce.diff.figure.cdf.all.label <- "All"
+  }
+  
+  #global switches/parameters being used in the ce.diff.test.tsne function
+  {
+    fcs.use.cached.results <- TRUE
+    fcs.ce.diff.tsne.perplexity.factor <- 3
+    fcs.tsne.perplexity <- 30
+    
+    fcs.ce.diff.tsne.cache.file.path <- 
+      paste0( loc_tsne_diff, "monomacro/tsne_all_disease_cache.dat")
+  }
+  
+  set.seed.here( 42, "calculate cross-entropy test for tsne" )
+  
+  #only select PCs used for calculating t-SNE
+  dmrd.data <- seurat_monomacro@reductions$pca@cell.embeddings[,1:75]
+  tsne.data <- seurat_monomacro@reductions$tsne@cell.embeddings
+  
+  dmrd.event.condition <- gsub(pattern = "_.*$", 
+                               replacement = "", 
+                               x = rownames(dmrd.data))
+  
+  gc()
+  ce.diff.test.tsne.res.disease <- ce.diff.test.tsne(
+    dmrd.data, tsne.data, 
+    factor(x = seurat_monomacro@meta.data$Disease, 
+           levels = unique(seurat_monomacro@meta.data$Disease)), 
+    partition.label = fcs.condition.label, 
+    partition.color = fcs.condition.color, # needs fcs.condition.n
+    partition.line.type = fcs.condition.line.type, 
+    base.test = "ks", #fcs.ce.diff.base.test, 
+    base.dist = "ks", #fcs.ce.diff.base.dist, 
+    prob.sample.n = NULL, #fcs.ce.diff.prob.sample.n, 
+    dendrogram.order.weight = c(1:fcs.condition.n), #fcs.ce.diff.figure.dendrogram.weight.condition, 
+    result = paste0( loc_tsne_diff, "monomacro/", 
+                        sprintf( "%s_disease.txt", 
+                                 "tsne_ce_diff_result" #fcs.ce.diff.tsne.result 
+                                 ) ), 
+    cdf.figure = paste0( loc_tsne_diff, "monomacro/", 
+                            sprintf( "%s_disease.png", 
+                                     "tsne_ce_diff_cdf" #fcs.ce.diff.tsne.figure.cdf 
+                                     ) ), 
+    dendrogram.figure = paste0( loc_tsne_diff, "monomacro/", 
+          sprintf( "%s_disease.png", 
+                   "tsne_ce_diff_dendrogram" #fcs.ce.diff.tsne.figure.dendrogram 
+                   ) ) 
+    )
+  
+  text_info <- read.delim(file = paste0(loc_tsne_diff, "monomacro/", 
+                                        "tsne_ce_diff_result_disease.txt"), 
+                          stringsAsFactors = F, skip = 2)[2,1]
+  
+  DimPlot(object = seurat_monomacro, 
+          reduction = "tsne", 
+          group.by = "Disease" 
+          ) + 
+    xlab(label = "Dimension 1") + ylab(label = "Dimension 2") + 
+    labs(title = "", caption = text_info) + coord_fixed() + 
+    theme(text = element_text(size = 20), 
+          axis.text = element_text(size = 16))
+  
+}
+
+## for cd8
+# calculate cross-entropy test for tsne by disease
+{
+  
+  #testing it for samples/subjects/mice as the condition group
+  fcs.condition <- as.character(sort(unique(seurat_cd8@meta.data$Disease)))
+  fcs.condition.n <- length(fcs.condition)
+  fcs.condition.label <- fcs.condition
+  names(fcs.condition.label) <- fcs.condition
+  
+  #some parameters copied as is from Carlos' script
+  {
+    # graphics parameters
+    fcs.color.pool <- c( 
+        brewer.pal( 8, "Set1" )[ -6 ], 
+        brewer.pal( 7, "Set2" )[ c( 1, 3, 6 ) ], 
+        adjustcolor( brewer.pal( 8, "Set1" )[ -6 ], 
+            red.f = 0.9, green.f = 0.8, blue.f = 0.7 ), 
+        adjustcolor( brewer.pal( 7, "Set2" )[ c( 1, 3, 6 ) ], 
+            red.f = 0.9, green.f = 0.8, blue.f = 0.7 ), 
+        adjustcolor( brewer.pal( 8, "Set1" )[ -6 ], 
+            red.f = 0.8, green.f = 0.6, blue.f = 0.5 ), 
+        adjustcolor( brewer.pal( 7, "Set2" )[ c( 1, 3, 6 ) ], 
+            red.f = 0.8, green.f = 0.6, blue.f = 0.5 ), 
+        adjustcolor( brewer.pal( 8, "Set1" )[ -6 ], 
+            red.f = 0.3, green.f = 0.3, blue.f = 0.3 ), 
+        adjustcolor( brewer.pal( 7, "Set2" )[ c( 1, 3, 6 ) ], 
+            red.f = 0.3, green.f = 0.3, blue.f = 0.3 ) )
+    fcs.color.pool.n <- length( fcs.color.pool )
+    
+    fcs.line.type.pool <- 1:6
+    fcs.line.type.pool.n <- length( fcs.line.type.pool )
+    
+    fcs.condition.color <- rep( 
+        fcs.color.pool, 
+        ceiling( fcs.condition.n / fcs.color.pool.n ) 
+    )[ 1 : fcs.condition.n ]
+    names( fcs.condition.color ) <- fcs.condition
+    
+    fcs.condition.line.type <- rep( 
+        fcs.line.type.pool, 
+        ceiling( fcs.condition.n / fcs.line.type.pool.n ) 
+    )[ 1 : fcs.condition.n ]
+    names( fcs.condition.line.type ) <- fcs.condition
+    
+    fcs.ce.diff.figure.cdf.width <- 1200
+    fcs.ce.diff.figure.cdf.height <- 800
+    
+    fcs.ce.diff.figure.dendrogram.width <- 1200
+    fcs.ce.diff.figure.dendrogram.height <- 800
+    
+    fcs.ce.diff.figure.font.size <- 2
+    fcs.ce.diff.figure.line.width <- 3
+    
+    fcs.ce.diff.figure.cdf.resolution <- 500
+    fcs.ce.diff.figure.cdf.all.color <- "black"
+    fcs.ce.diff.figure.cdf.all.label <- "All"
+  }
+  
+  #global switches/parameters being used in the ce.diff.test.tsne function
+  {
+    fcs.use.cached.results <- TRUE
+    fcs.ce.diff.tsne.perplexity.factor <- 3
+    fcs.tsne.perplexity <- 30
+    
+    fcs.ce.diff.tsne.cache.file.path <- 
+      paste0( loc_tsne_diff, "cd8/tsne_all_disease_cache.dat")
+  }
+  
+  set.seed.here( 42, "calculate cross-entropy test for tsne" )
+  
+  #only select PCs used for calculating t-SNE
+  dmrd.data <- seurat_cd8@reductions$pca@cell.embeddings[,1:100]
+  tsne.data <- seurat_cd8@reductions$tsne@cell.embeddings
+  
+  dmrd.event.condition <- gsub(pattern = "_.*$", 
+                               replacement = "", 
+                               x = rownames(dmrd.data))
+  
+  gc()
+  ce.diff.test.tsne.res.disease <- ce.diff.test.tsne(
+    dmrd.data, tsne.data, 
+    factor(x = seurat_cd8@meta.data$Disease, 
+           levels = unique(seurat_cd8@meta.data$Disease)), 
+    partition.label = fcs.condition.label, 
+    partition.color = fcs.condition.color, # needs fcs.condition.n
+    partition.line.type = fcs.condition.line.type, 
+    base.test = "ks", #fcs.ce.diff.base.test, 
+    base.dist = "ks", #fcs.ce.diff.base.dist, 
+    prob.sample.n = NULL, #fcs.ce.diff.prob.sample.n, 
+    dendrogram.order.weight = c(1:fcs.condition.n), #fcs.ce.diff.figure.dendrogram.weight.condition, 
+    result = paste0( loc_tsne_diff, "cd8/", 
+                        sprintf( "%s_disease.txt", 
+                                 "tsne_ce_diff_result" #fcs.ce.diff.tsne.result 
+                                 ) ), 
+    cdf.figure = paste0( loc_tsne_diff, "cd8/", 
+                            sprintf( "%s_disease.png", 
+                                     "tsne_ce_diff_cdf" #fcs.ce.diff.tsne.figure.cdf 
+                                     ) ), 
+    dendrogram.figure = paste0( loc_tsne_diff, "cd8/", 
+          sprintf( "%s_disease.png", 
+                   "tsne_ce_diff_dendrogram" #fcs.ce.diff.tsne.figure.dendrogram 
+                   ) ) 
+    )
+  
+  text_info <- read.delim(file = paste0(loc_tsne_diff, "cd8/", 
+                                        "tsne_ce_diff_result_disease.txt"), 
+                          stringsAsFactors = F, skip = 2)[2,1]
+  
+  DimPlot(object = seurat_cd8, 
+          reduction = "tsne", 
+          group.by = "Disease" 
+          ) + 
+    xlab(label = "Dimension 1") + ylab(label = "Dimension 2") + 
+    labs(title = "", caption = text_info) + coord_fixed() + 
+    theme(text = element_text(size = 20), 
+          axis.text = element_text(size = 16))
+  
+}
+
+## for bcell
+# calculate cross-entropy test for tsne by disease
+{
+  
+  #testing it for samples/subjects/mice as the condition group
+  fcs.condition <- as.character(sort(unique(seurat_bcell@meta.data$Disease)))
+  fcs.condition.n <- length(fcs.condition)
+  fcs.condition.label <- fcs.condition
+  names(fcs.condition.label) <- fcs.condition
+  
+  #some parameters copied as is from Carlos' script
+  {
+    # graphics parameters
+    fcs.color.pool <- c( 
+        brewer.pal( 8, "Set1" )[ -6 ], 
+        brewer.pal( 7, "Set2" )[ c( 1, 3, 6 ) ], 
+        adjustcolor( brewer.pal( 8, "Set1" )[ -6 ], 
+            red.f = 0.9, green.f = 0.8, blue.f = 0.7 ), 
+        adjustcolor( brewer.pal( 7, "Set2" )[ c( 1, 3, 6 ) ], 
+            red.f = 0.9, green.f = 0.8, blue.f = 0.7 ), 
+        adjustcolor( brewer.pal( 8, "Set1" )[ -6 ], 
+            red.f = 0.8, green.f = 0.6, blue.f = 0.5 ), 
+        adjustcolor( brewer.pal( 7, "Set2" )[ c( 1, 3, 6 ) ], 
+            red.f = 0.8, green.f = 0.6, blue.f = 0.5 ), 
+        adjustcolor( brewer.pal( 8, "Set1" )[ -6 ], 
+            red.f = 0.3, green.f = 0.3, blue.f = 0.3 ), 
+        adjustcolor( brewer.pal( 7, "Set2" )[ c( 1, 3, 6 ) ], 
+            red.f = 0.3, green.f = 0.3, blue.f = 0.3 ) )
+    fcs.color.pool.n <- length( fcs.color.pool )
+    
+    fcs.line.type.pool <- 1:6
+    fcs.line.type.pool.n <- length( fcs.line.type.pool )
+    
+    fcs.condition.color <- rep( 
+        fcs.color.pool, 
+        ceiling( fcs.condition.n / fcs.color.pool.n ) 
+    )[ 1 : fcs.condition.n ]
+    names( fcs.condition.color ) <- fcs.condition
+    
+    fcs.condition.line.type <- rep( 
+        fcs.line.type.pool, 
+        ceiling( fcs.condition.n / fcs.line.type.pool.n ) 
+    )[ 1 : fcs.condition.n ]
+    names( fcs.condition.line.type ) <- fcs.condition
+    
+    fcs.ce.diff.figure.cdf.width <- 1200
+    fcs.ce.diff.figure.cdf.height <- 800
+    
+    fcs.ce.diff.figure.dendrogram.width <- 1200
+    fcs.ce.diff.figure.dendrogram.height <- 800
+    
+    fcs.ce.diff.figure.font.size <- 2
+    fcs.ce.diff.figure.line.width <- 3
+    
+    fcs.ce.diff.figure.cdf.resolution <- 500
+    fcs.ce.diff.figure.cdf.all.color <- "black"
+    fcs.ce.diff.figure.cdf.all.label <- "All"
+  }
+  
+  #global switches/parameters being used in the ce.diff.test.tsne function
+  {
+    fcs.use.cached.results <- TRUE
+    fcs.ce.diff.tsne.perplexity.factor <- 3
+    fcs.tsne.perplexity <- 30
+    
+    fcs.ce.diff.tsne.cache.file.path <- 
+      paste0( loc_tsne_diff, "bcell/tsne_all_disease_cache.dat")
+  }
+  
+  set.seed.here( 42, "calculate cross-entropy test for tsne" )
+  
+  #only select PCs used for calculating t-SNE
+  dmrd.data <- seurat_bcell@reductions$pca@cell.embeddings[,1:75]
+  tsne.data <- seurat_bcell@reductions$tsne@cell.embeddings
+  
+  dmrd.event.condition <- gsub(pattern = "_.*$", 
+                               replacement = "", 
+                               x = rownames(dmrd.data))
+  
+  gc()
+  ce.diff.test.tsne.res.disease <- ce.diff.test.tsne(
+    dmrd.data, tsne.data, 
+    factor(x = seurat_bcell@meta.data$Disease, 
+           levels = unique(seurat_bcell@meta.data$Disease)), 
+    partition.label = fcs.condition.label, 
+    partition.color = fcs.condition.color, # needs fcs.condition.n
+    partition.line.type = fcs.condition.line.type, 
+    base.test = "ks", #fcs.ce.diff.base.test, 
+    base.dist = "ks", #fcs.ce.diff.base.dist, 
+    prob.sample.n = NULL, #fcs.ce.diff.prob.sample.n, 
+    dendrogram.order.weight = c(1:fcs.condition.n), #fcs.ce.diff.figure.dendrogram.weight.condition, 
+    result = paste0( loc_tsne_diff, "bcell/", 
+                        sprintf( "%s_disease.txt", 
+                                 "tsne_ce_diff_result" #fcs.ce.diff.tsne.result 
+                                 ) ), 
+    cdf.figure = paste0( loc_tsne_diff, "bcell/", 
+                            sprintf( "%s_disease.png", 
+                                     "tsne_ce_diff_cdf" #fcs.ce.diff.tsne.figure.cdf 
+                                     ) ), 
+    dendrogram.figure = paste0( loc_tsne_diff, "bcell/", 
+          sprintf( "%s_disease.png", 
+                   "tsne_ce_diff_dendrogram" #fcs.ce.diff.tsne.figure.dendrogram 
+                   ) ) 
+    )
+  
+  text_info <- read.delim(file = paste0(loc_tsne_diff, "bcell/", 
+                                        "tsne_ce_diff_result_disease.txt"), 
+                          stringsAsFactors = F, skip = 2)[2,1]
+  
+  DimPlot(object = seurat_bcell, 
+          reduction = "tsne", 
+          group.by = "Disease" 
+          ) + 
+    xlab(label = "Dimension 1") + ylab(label = "Dimension 2") + 
+    labs(title = "", caption = text_info) + coord_fixed() + 
+    theme(text = element_text(size = 20), 
+          axis.text = element_text(size = 16))
+  
+}
+
+## for dend
+# calculate cross-entropy test for tsne by disease
+{
+  
+  #testing it for samples/subjects/mice as the condition group
+  fcs.condition <- as.character(sort(unique(seurat_dend@meta.data$Disease)))
+  fcs.condition.n <- length(fcs.condition)
+  fcs.condition.label <- fcs.condition
+  names(fcs.condition.label) <- fcs.condition
+  
+  #some parameters copied as is from Carlos' script
+  {
+    # graphics parameters
+    fcs.color.pool <- c( 
+        brewer.pal( 8, "Set1" )[ -6 ], 
+        brewer.pal( 7, "Set2" )[ c( 1, 3, 6 ) ], 
+        adjustcolor( brewer.pal( 8, "Set1" )[ -6 ], 
+            red.f = 0.9, green.f = 0.8, blue.f = 0.7 ), 
+        adjustcolor( brewer.pal( 7, "Set2" )[ c( 1, 3, 6 ) ], 
+            red.f = 0.9, green.f = 0.8, blue.f = 0.7 ), 
+        adjustcolor( brewer.pal( 8, "Set1" )[ -6 ], 
+            red.f = 0.8, green.f = 0.6, blue.f = 0.5 ), 
+        adjustcolor( brewer.pal( 7, "Set2" )[ c( 1, 3, 6 ) ], 
+            red.f = 0.8, green.f = 0.6, blue.f = 0.5 ), 
+        adjustcolor( brewer.pal( 8, "Set1" )[ -6 ], 
+            red.f = 0.3, green.f = 0.3, blue.f = 0.3 ), 
+        adjustcolor( brewer.pal( 7, "Set2" )[ c( 1, 3, 6 ) ], 
+            red.f = 0.3, green.f = 0.3, blue.f = 0.3 ) )
+    fcs.color.pool.n <- length( fcs.color.pool )
+    
+    fcs.line.type.pool <- 1:6
+    fcs.line.type.pool.n <- length( fcs.line.type.pool )
+    
+    fcs.condition.color <- rep( 
+        fcs.color.pool, 
+        ceiling( fcs.condition.n / fcs.color.pool.n ) 
+    )[ 1 : fcs.condition.n ]
+    names( fcs.condition.color ) <- fcs.condition
+    
+    fcs.condition.line.type <- rep( 
+        fcs.line.type.pool, 
+        ceiling( fcs.condition.n / fcs.line.type.pool.n ) 
+    )[ 1 : fcs.condition.n ]
+    names( fcs.condition.line.type ) <- fcs.condition
+    
+    fcs.ce.diff.figure.cdf.width <- 1200
+    fcs.ce.diff.figure.cdf.height <- 800
+    
+    fcs.ce.diff.figure.dendrogram.width <- 1200
+    fcs.ce.diff.figure.dendrogram.height <- 800
+    
+    fcs.ce.diff.figure.font.size <- 2
+    fcs.ce.diff.figure.line.width <- 3
+    
+    fcs.ce.diff.figure.cdf.resolution <- 500
+    fcs.ce.diff.figure.cdf.all.color <- "black"
+    fcs.ce.diff.figure.cdf.all.label <- "All"
+  }
+  
+  #global switches/parameters being used in the ce.diff.test.tsne function
+  {
+    fcs.use.cached.results <- TRUE
+    fcs.ce.diff.tsne.perplexity.factor <- 3
+    fcs.tsne.perplexity <- 30
+    
+    fcs.ce.diff.tsne.cache.file.path <- 
+      paste0( loc_tsne_diff, "dend/tsne_all_disease_cache.dat")
+  }
+  
+  set.seed.here( 42, "calculate cross-entropy test for tsne" )
+  
+  #only select PCs used for calculating t-SNE
+  dmrd.data <- seurat_dend@reductions$pca@cell.embeddings[,1:75]
+  tsne.data <- seurat_dend@reductions$tsne@cell.embeddings
+  
+  dmrd.event.condition <- gsub(pattern = "_.*$", 
+                               replacement = "", 
+                               x = rownames(dmrd.data))
+  
+  gc()
+  ce.diff.test.tsne.res.disease <- ce.diff.test.tsne(
+    dmrd.data, tsne.data, 
+    factor(x = seurat_dend@meta.data$Disease, 
+           levels = unique(seurat_dend@meta.data$Disease)), 
+    partition.label = fcs.condition.label, 
+    partition.color = fcs.condition.color, # needs fcs.condition.n
+    partition.line.type = fcs.condition.line.type, 
+    base.test = "ks", #fcs.ce.diff.base.test, 
+    base.dist = "ks", #fcs.ce.diff.base.dist, 
+    prob.sample.n = NULL, #fcs.ce.diff.prob.sample.n, 
+    dendrogram.order.weight = c(1:fcs.condition.n), #fcs.ce.diff.figure.dendrogram.weight.condition, 
+    result = paste0( loc_tsne_diff, "dend/", 
+                        sprintf( "%s_disease.txt", 
+                                 "tsne_ce_diff_result" #fcs.ce.diff.tsne.result 
+                                 ) ), 
+    cdf.figure = paste0( loc_tsne_diff, "dend/", 
+                            sprintf( "%s_disease.png", 
+                                     "tsne_ce_diff_cdf" #fcs.ce.diff.tsne.figure.cdf 
+                                     ) ), 
+    dendrogram.figure = paste0( loc_tsne_diff, "dend/", 
+          sprintf( "%s_disease.png", 
+                   "tsne_ce_diff_dendrogram" #fcs.ce.diff.tsne.figure.dendrogram 
+                   ) ) 
+    )
+  
+  text_info <- read.delim(file = paste0(loc_tsne_diff, "dend/", 
+                                        "tsne_ce_diff_result_disease.txt"), 
+                          stringsAsFactors = F, skip = 2)[2,1]
+  
+  DimPlot(object = seurat_dend, 
+          reduction = "tsne", 
+          group.by = "Disease" 
+          ) + 
+    xlab(label = "Dimension 1") + ylab(label = "Dimension 2") + 
+    labs(title = "", caption = text_info) + coord_fixed() + 
+    theme(text = element_text(size = 20), 
+          axis.text = element_text(size = 16))
+  
+}
+
+## for epith
+# calculate cross-entropy test for tsne by disease
+{
+  
+  #testing it for samples/subjects/mice as the condition group
+  fcs.condition <- as.character(sort(unique(seurat_epith@meta.data$Disease)))
+  fcs.condition.n <- length(fcs.condition)
+  fcs.condition.label <- fcs.condition
+  names(fcs.condition.label) <- fcs.condition
+  
+  #some parameters copied as is from Carlos' script
+  {
+    # graphics parameters
+    fcs.color.pool <- c( 
+        brewer.pal( 8, "Set1" )[ -6 ], 
+        brewer.pal( 7, "Set2" )[ c( 1, 3, 6 ) ], 
+        adjustcolor( brewer.pal( 8, "Set1" )[ -6 ], 
+            red.f = 0.9, green.f = 0.8, blue.f = 0.7 ), 
+        adjustcolor( brewer.pal( 7, "Set2" )[ c( 1, 3, 6 ) ], 
+            red.f = 0.9, green.f = 0.8, blue.f = 0.7 ), 
+        adjustcolor( brewer.pal( 8, "Set1" )[ -6 ], 
+            red.f = 0.8, green.f = 0.6, blue.f = 0.5 ), 
+        adjustcolor( brewer.pal( 7, "Set2" )[ c( 1, 3, 6 ) ], 
+            red.f = 0.8, green.f = 0.6, blue.f = 0.5 ), 
+        adjustcolor( brewer.pal( 8, "Set1" )[ -6 ], 
+            red.f = 0.3, green.f = 0.3, blue.f = 0.3 ), 
+        adjustcolor( brewer.pal( 7, "Set2" )[ c( 1, 3, 6 ) ], 
+            red.f = 0.3, green.f = 0.3, blue.f = 0.3 ) )
+    fcs.color.pool.n <- length( fcs.color.pool )
+    
+    fcs.line.type.pool <- 1:6
+    fcs.line.type.pool.n <- length( fcs.line.type.pool )
+    
+    fcs.condition.color <- rep( 
+        fcs.color.pool, 
+        ceiling( fcs.condition.n / fcs.color.pool.n ) 
+    )[ 1 : fcs.condition.n ]
+    names( fcs.condition.color ) <- fcs.condition
+    
+    fcs.condition.line.type <- rep( 
+        fcs.line.type.pool, 
+        ceiling( fcs.condition.n / fcs.line.type.pool.n ) 
+    )[ 1 : fcs.condition.n ]
+    names( fcs.condition.line.type ) <- fcs.condition
+    
+    fcs.ce.diff.figure.cdf.width <- 1200
+    fcs.ce.diff.figure.cdf.height <- 800
+    
+    fcs.ce.diff.figure.dendrogram.width <- 1200
+    fcs.ce.diff.figure.dendrogram.height <- 800
+    
+    fcs.ce.diff.figure.font.size <- 2
+    fcs.ce.diff.figure.line.width <- 3
+    
+    fcs.ce.diff.figure.cdf.resolution <- 500
+    fcs.ce.diff.figure.cdf.all.color <- "black"
+    fcs.ce.diff.figure.cdf.all.label <- "All"
+  }
+  
+  #global switches/parameters being used in the ce.diff.test.tsne function
+  {
+    fcs.use.cached.results <- TRUE
+    fcs.ce.diff.tsne.perplexity.factor <- 3
+    fcs.tsne.perplexity <- 30
+    
+    fcs.ce.diff.tsne.cache.file.path <- 
+      paste0( loc_tsne_diff, "epith/tsne_all_disease_cache.dat")
+  }
+  
+  set.seed.here( 42, "calculate cross-entropy test for tsne" )
+  
+  #only select PCs used for calculating t-SNE
+  dmrd.data <- seurat_epith@reductions$pca@cell.embeddings[,1:75]
+  tsne.data <- seurat_epith@reductions$tsne@cell.embeddings
+  
+  dmrd.event.condition <- gsub(pattern = "_.*$", 
+                               replacement = "", 
+                               x = rownames(dmrd.data))
+  
+  gc()
+  ce.diff.test.tsne.res.disease <- ce.diff.test.tsne(
+    dmrd.data, tsne.data, 
+    factor(x = seurat_epith@meta.data$Disease, 
+           levels = unique(seurat_epith@meta.data$Disease)), 
+    partition.label = fcs.condition.label, 
+    partition.color = fcs.condition.color, # needs fcs.condition.n
+    partition.line.type = fcs.condition.line.type, 
+    base.test = "ks", #fcs.ce.diff.base.test, 
+    base.dist = "ks", #fcs.ce.diff.base.dist, 
+    prob.sample.n = NULL, #fcs.ce.diff.prob.sample.n, 
+    dendrogram.order.weight = c(1:fcs.condition.n), #fcs.ce.diff.figure.dendrogram.weight.condition, 
+    result = paste0( loc_tsne_diff, "epith/", 
+                        sprintf( "%s_disease.txt", 
+                                 "tsne_ce_diff_result" #fcs.ce.diff.tsne.result 
+                                 ) ), 
+    cdf.figure = paste0( loc_tsne_diff, "epith/", 
+                            sprintf( "%s_disease.png", 
+                                     "tsne_ce_diff_cdf" #fcs.ce.diff.tsne.figure.cdf 
+                                     ) ), 
+    dendrogram.figure = paste0( loc_tsne_diff, "epith/", 
+          sprintf( "%s_disease.png", 
+                   "tsne_ce_diff_dendrogram" #fcs.ce.diff.tsne.figure.dendrogram 
+                   ) ) 
+    )
+  
+  text_info <- read.delim(file = paste0(loc_tsne_diff, "epith/", 
+                                        "tsne_ce_diff_result_disease.txt"), 
+                          stringsAsFactors = F, skip = 2)[2,1]
+  
+  DimPlot(object = seurat_epith, 
+          reduction = "tsne", 
+          group.by = "Disease" 
+          ) + 
+    xlab(label = "Dimension 1") + ylab(label = "Dimension 2") + 
+    labs(title = "", caption = text_info) + coord_fixed() + 
+    theme(text = element_text(size = 20), 
+          axis.text = element_text(size = 16))
+  
+}
+
+## for neut
+# calculate cross-entropy test for tsne by disease
+{
+  
+  #testing it for samples/subjects/mice as the condition group
+  fcs.condition <- as.character(sort(unique(seurat_neut@meta.data$Disease)))
+  fcs.condition.n <- length(fcs.condition)
+  fcs.condition.label <- fcs.condition
+  names(fcs.condition.label) <- fcs.condition
+  
+  #some parameters copied as is from Carlos' script
+  {
+    # graphics parameters
+    fcs.color.pool <- c( 
+        brewer.pal( 8, "Set1" )[ -6 ], 
+        brewer.pal( 7, "Set2" )[ c( 1, 3, 6 ) ], 
+        adjustcolor( brewer.pal( 8, "Set1" )[ -6 ], 
+            red.f = 0.9, green.f = 0.8, blue.f = 0.7 ), 
+        adjustcolor( brewer.pal( 7, "Set2" )[ c( 1, 3, 6 ) ], 
+            red.f = 0.9, green.f = 0.8, blue.f = 0.7 ), 
+        adjustcolor( brewer.pal( 8, "Set1" )[ -6 ], 
+            red.f = 0.8, green.f = 0.6, blue.f = 0.5 ), 
+        adjustcolor( brewer.pal( 7, "Set2" )[ c( 1, 3, 6 ) ], 
+            red.f = 0.8, green.f = 0.6, blue.f = 0.5 ), 
+        adjustcolor( brewer.pal( 8, "Set1" )[ -6 ], 
+            red.f = 0.3, green.f = 0.3, blue.f = 0.3 ), 
+        adjustcolor( brewer.pal( 7, "Set2" )[ c( 1, 3, 6 ) ], 
+            red.f = 0.3, green.f = 0.3, blue.f = 0.3 ) )
+    fcs.color.pool.n <- length( fcs.color.pool )
+    
+    fcs.line.type.pool <- 1:6
+    fcs.line.type.pool.n <- length( fcs.line.type.pool )
+    
+    fcs.condition.color <- rep( 
+        fcs.color.pool, 
+        ceiling( fcs.condition.n / fcs.color.pool.n ) 
+    )[ 1 : fcs.condition.n ]
+    names( fcs.condition.color ) <- fcs.condition
+    
+    fcs.condition.line.type <- rep( 
+        fcs.line.type.pool, 
+        ceiling( fcs.condition.n / fcs.line.type.pool.n ) 
+    )[ 1 : fcs.condition.n ]
+    names( fcs.condition.line.type ) <- fcs.condition
+    
+    fcs.ce.diff.figure.cdf.width <- 1200
+    fcs.ce.diff.figure.cdf.height <- 800
+    
+    fcs.ce.diff.figure.dendrogram.width <- 1200
+    fcs.ce.diff.figure.dendrogram.height <- 800
+    
+    fcs.ce.diff.figure.font.size <- 2
+    fcs.ce.diff.figure.line.width <- 3
+    
+    fcs.ce.diff.figure.cdf.resolution <- 500
+    fcs.ce.diff.figure.cdf.all.color <- "black"
+    fcs.ce.diff.figure.cdf.all.label <- "All"
+  }
+  
+  #global switches/parameters being used in the ce.diff.test.tsne function
+  {
+    fcs.use.cached.results <- TRUE
+    fcs.ce.diff.tsne.perplexity.factor <- 3
+    fcs.tsne.perplexity <- 30
+    
+    fcs.ce.diff.tsne.cache.file.path <- 
+      paste0( loc_tsne_diff, "neut/tsne_all_disease_cache.dat")
+  }
+  
+  set.seed.here( 42, "calculate cross-entropy test for tsne" )
+  
+  #only select PCs used for calculating t-SNE
+  dmrd.data <- seurat_neut@reductions$pca@cell.embeddings[,1:75]
+  tsne.data <- seurat_neut@reductions$tsne@cell.embeddings
+  
+  dmrd.event.condition <- gsub(pattern = "_.*$", 
+                               replacement = "", 
+                               x = rownames(dmrd.data))
+  
+  gc()
+  ce.diff.test.tsne.res.disease <- ce.diff.test.tsne(
+    dmrd.data, tsne.data, 
+    factor(x = seurat_neut@meta.data$Disease, 
+           levels = unique(seurat_neut@meta.data$Disease)), 
+    partition.label = fcs.condition.label, 
+    partition.color = fcs.condition.color, # needs fcs.condition.n
+    partition.line.type = fcs.condition.line.type, 
+    base.test = "ks", #fcs.ce.diff.base.test, 
+    base.dist = "ks", #fcs.ce.diff.base.dist, 
+    prob.sample.n = NULL, #fcs.ce.diff.prob.sample.n, 
+    dendrogram.order.weight = c(1:fcs.condition.n), #fcs.ce.diff.figure.dendrogram.weight.condition, 
+    result = paste0( loc_tsne_diff, "neut/", 
+                        sprintf( "%s_disease.txt", 
+                                 "tsne_ce_diff_result" #fcs.ce.diff.tsne.result 
+                                 ) ), 
+    cdf.figure = paste0( loc_tsne_diff, "neut/", 
+                            sprintf( "%s_disease.png", 
+                                     "tsne_ce_diff_cdf" #fcs.ce.diff.tsne.figure.cdf 
+                                     ) ), 
+    dendrogram.figure = paste0( loc_tsne_diff, "neut/", 
+          sprintf( "%s_disease.png", 
+                   "tsne_ce_diff_dendrogram" #fcs.ce.diff.tsne.figure.dendrogram 
+                   ) ) 
+    )
+  
+  text_info <- read.delim(file = paste0(loc_tsne_diff, "neut/", 
+                                        "tsne_ce_diff_result_disease.txt"), 
+                          stringsAsFactors = F, skip = 2)[2,1]
+  
+  DimPlot(object = seurat_neut, 
+          reduction = "tsne", 
+          group.by = "Disease" 
+          ) + 
+    xlab(label = "Dimension 1") + ylab(label = "Dimension 2") + 
+    labs(title = "", caption = text_info) + coord_fixed() + 
+    theme(text = element_text(size = 20), 
+          axis.text = element_text(size = 16))
+  
+}
+
+## for tnk
+# calculate cross-entropy test for tsne by disease
+{
+  
+  #testing it for samples/subjects/mice as the condition group
+  fcs.condition <- as.character(sort(unique(seurat_tnk@meta.data$Disease)))
+  fcs.condition.n <- length(fcs.condition)
+  fcs.condition.label <- fcs.condition
+  names(fcs.condition.label) <- fcs.condition
+  
+  #some parameters copied as is from Carlos' script
+  {
+    # graphics parameters
+    fcs.color.pool <- c( 
+        brewer.pal( 8, "Set1" )[ -6 ], 
+        brewer.pal( 7, "Set2" )[ c( 1, 3, 6 ) ], 
+        adjustcolor( brewer.pal( 8, "Set1" )[ -6 ], 
+            red.f = 0.9, green.f = 0.8, blue.f = 0.7 ), 
+        adjustcolor( brewer.pal( 7, "Set2" )[ c( 1, 3, 6 ) ], 
+            red.f = 0.9, green.f = 0.8, blue.f = 0.7 ), 
+        adjustcolor( brewer.pal( 8, "Set1" )[ -6 ], 
+            red.f = 0.8, green.f = 0.6, blue.f = 0.5 ), 
+        adjustcolor( brewer.pal( 7, "Set2" )[ c( 1, 3, 6 ) ], 
+            red.f = 0.8, green.f = 0.6, blue.f = 0.5 ), 
+        adjustcolor( brewer.pal( 8, "Set1" )[ -6 ], 
+            red.f = 0.3, green.f = 0.3, blue.f = 0.3 ), 
+        adjustcolor( brewer.pal( 7, "Set2" )[ c( 1, 3, 6 ) ], 
+            red.f = 0.3, green.f = 0.3, blue.f = 0.3 ) )
+    fcs.color.pool.n <- length( fcs.color.pool )
+    
+    fcs.line.type.pool <- 1:6
+    fcs.line.type.pool.n <- length( fcs.line.type.pool )
+    
+    fcs.condition.color <- rep( 
+        fcs.color.pool, 
+        ceiling( fcs.condition.n / fcs.color.pool.n ) 
+    )[ 1 : fcs.condition.n ]
+    names( fcs.condition.color ) <- fcs.condition
+    
+    fcs.condition.line.type <- rep( 
+        fcs.line.type.pool, 
+        ceiling( fcs.condition.n / fcs.line.type.pool.n ) 
+    )[ 1 : fcs.condition.n ]
+    names( fcs.condition.line.type ) <- fcs.condition
+    
+    fcs.ce.diff.figure.cdf.width <- 1200
+    fcs.ce.diff.figure.cdf.height <- 800
+    
+    fcs.ce.diff.figure.dendrogram.width <- 1200
+    fcs.ce.diff.figure.dendrogram.height <- 800
+    
+    fcs.ce.diff.figure.font.size <- 2
+    fcs.ce.diff.figure.line.width <- 3
+    
+    fcs.ce.diff.figure.cdf.resolution <- 500
+    fcs.ce.diff.figure.cdf.all.color <- "black"
+    fcs.ce.diff.figure.cdf.all.label <- "All"
+  }
+  
+  #global switches/parameters being used in the ce.diff.test.tsne function
+  {
+    fcs.use.cached.results <- TRUE
+    fcs.ce.diff.tsne.perplexity.factor <- 3
+    fcs.tsne.perplexity <- 30
+    
+    fcs.ce.diff.tsne.cache.file.path <- 
+      paste0( loc_tsne_diff, "tnk/tsne_all_disease_cache.dat")
+  }
+  
+  set.seed.here( 42, "calculate cross-entropy test for tsne" )
+  
+  #only select PCs used for calculating t-SNE
+  dmrd.data <- seurat_tnk@reductions$pca@cell.embeddings[,1:75]
+  tsne.data <- seurat_tnk@reductions$tsne@cell.embeddings
+  
+  dmrd.event.condition <- gsub(pattern = "_.*$", 
+                               replacement = "", 
+                               x = rownames(dmrd.data))
+  
+  gc()
+  ce.diff.test.tsne.res.disease <- ce.diff.test.tsne(
+    dmrd.data, tsne.data, 
+    factor(x = seurat_tnk@meta.data$Disease, 
+           levels = unique(seurat_tnk@meta.data$Disease)), 
+    partition.label = fcs.condition.label, 
+    partition.color = fcs.condition.color, # needs fcs.condition.n
+    partition.line.type = fcs.condition.line.type, 
+    base.test = "ks", #fcs.ce.diff.base.test, 
+    base.dist = "ks", #fcs.ce.diff.base.dist, 
+    prob.sample.n = NULL, #fcs.ce.diff.prob.sample.n, 
+    dendrogram.order.weight = c(1:fcs.condition.n), #fcs.ce.diff.figure.dendrogram.weight.condition, 
+    result = paste0( loc_tsne_diff, "tnk/", 
+                        sprintf( "%s_disease.txt", 
+                                 "tsne_ce_diff_result" #fcs.ce.diff.tsne.result 
+                                 ) ), 
+    cdf.figure = paste0( loc_tsne_diff, "tnk/", 
+                            sprintf( "%s_disease.png", 
+                                     "tsne_ce_diff_cdf" #fcs.ce.diff.tsne.figure.cdf 
+                                     ) ), 
+    dendrogram.figure = paste0( loc_tsne_diff, "tnk/", 
+          sprintf( "%s_disease.png", 
+                   "tsne_ce_diff_dendrogram" #fcs.ce.diff.tsne.figure.dendrogram 
+                   ) ) 
+    )
+  
+  text_info <- read.delim(file = paste0(loc_tsne_diff, "tnk/", 
+                                        "tsne_ce_diff_result_disease.txt"), 
+                          stringsAsFactors = F, skip = 2)[2,1]
+  
+  DimPlot(object = seurat_tnk, 
+          reduction = "tsne", 
+          group.by = "Disease" 
+          ) + 
+    xlab(label = "Dimension 1") + ylab(label = "Dimension 2") + 
+    labs(title = "", caption = text_info) + coord_fixed() + 
+    theme(text = element_text(size = 20), 
+          axis.text = element_text(size = 16))
+  
+}
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
