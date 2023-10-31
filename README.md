@@ -1,6 +1,8 @@
 # FlowCytoScript
 A simplified complete workflow in R for analysis of high parameter flow cytometry data including the Crossentropy method.
 
+Code is available and free for academic users. Commercial users should contact Adrian Liston to discuss licensing options.
+
 This simplified version of the flowcytoscript (Crossentropy test) is intended to be usable by people with little to no experience in programming. All inputs are via plain language prompts in an RStudio markdown notebook. All outputs are organized in folders as before, but additionally an HTML document summarizing the results is created with each analysis. Check out "flowcytoscript.nb.html" for an example of the output.
 
 ![tsne_plot_all_conditions__cluster](https://github.com/AdrianListon/Cross-Entropy-test/assets/50043996/2bc3aeb5-0f71-4cb6-9763-f6bf64d7cb28)
