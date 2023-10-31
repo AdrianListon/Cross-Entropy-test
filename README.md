@@ -5,6 +5,7 @@ This simplified version of the flowcytoscript (Crossentropy test) is intended to
 
 **Features**  
 -Clustering with histograms of expression, barcharts and tables of frequencies  
+-Automated cluster identification  
 -tSNE and UMAP  
 -PCA on MFIs to show sample-level differences  
 -Crossentropy testing on tSNE and UMAP  
