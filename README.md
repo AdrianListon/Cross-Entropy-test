@@ -1,6 +1,8 @@
 # Cross-Entropy-test
 Unified script for applying the t-SNE diff method on flow cytometry or single cell RNA-seq data
 
+Code is available and free for academic users. Commercial users should contact Adrian Liston to discuss licensing options.
+
 For flow cytometry analysis, we recommend using the CSV-based method. This allows users to set the data scales (transformations) 
 in FlowJo or any other standard flow cytometry data analysis software. Scaling of the data is critical for optimal visualization and clustering. 
 To understand how to set scales in FlowJo, see the instruction file "Setting axis in FlowJo for Aurora data.pptx". Use the channel values format.
