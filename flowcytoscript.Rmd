@@ -1,0 +1,157 @@
+---
+title: "flowcytoscript"
+output: html_notebook
+---
+
+This is the interactive version of the Liston-Dooley lab's flowcytoscript analysis tool. In this
+R Markdown notebook, we'll try to help you analyze your high parameter flow cytometry data in a way that's hopefully easier if you're not skilled in R. We've optimized several of the parameters for the analysis (e.g., clustering, tSNE, UMAP) already. If you want to get into more detail or change the appearance of the plots, have a look at "flowcytoscript_graphics_parameters_src.r", or the more complex version of the script.
+
+Please review the instructions document before proceeding. The script is intended to analyze data files containing cells that have been pre-gated to remove debris, dead cells and, usually, to select a cell type of interest. If you know what you are doing, We recommend exporting your cytometry files in the "CSV - channel values" format so the scaling (biexponetial transform) is preserved. You can also use exported FCS files, but in this case your data will be transformed automatically by the script based on the type of cytometer you used. The data needs to be in a folder called "Data", and this "Data" folder should be in the same folder with this notebook and the "source_files" folder.
+
+This will probably run more smoothly in a local folder (not Dropbox or OneDrive).
+
+Execute each code chunk in order by clicking the *Run* button (green arrow) within the chunk. Some results will appear below, and the record of what you've done will be generated as an html file (flowcytoscript.nb) that you can open with any web browser. Rename the file .rmd prior to starting if you want to associate the name with a particular experiment.
+
+Once finished, you should see a report generated in your html notebook.
+
+---
+
+# 1) Start up and install any missing packages
+
+If this is your first time running the script, you should probably run
+flowcytoscript_setup.r first. That will help you update R and install Rtools.
+
+To change how long the messages are displayed for, change 
+message.delay.time <- 3
+to a bigger (slower) or smaller (faster) number.
+
+To eliminate messages and just respond to prompts, set
+Be.Chatty <- TRUE
+to FALSE rather than TRUE in the gray box below.
+
+This section installs any packages you will need for the analysis.
+You'll get a warning if anything fails to install properly. 
+
+
+```{r Install any missing packages}
+fcs.data.dir <- "./Data"
+fcs.src.dir <- "./00_source_files"
+message.delay.time <- 0
+Be.Chatty <- TRUE
+
+source( file.path( fcs.src.dir, "flowcytoscript_startup.r") )
+```
+
+
+
+# 2) Load packages, check for data and source files
+
+```{r Load packages}
+source( file.path( fcs.src.dir, "flowcytoscript_load_runchecks.r") )
+```
+
+
+
+# 3) Define the experiment
+
+Set your groups, select your channels, select how many cells to run.
+
+FCS and CSV files are accepted. For CSV, you should use CSV-Channel Values files
+exported from FlowJo after setting the biexponential transformation for each channel. 
+For FCS files, a biexponential transformation will be applied automatically based on
+the type of cytometer you've used.
+
+If you make any mistakes here, you can re-run this chunk and try again.
+
+```{r Define experiment}
+source( file.path( fcs.src.dir, "flowcytoscript_define_experiment.r") )
+```
+
+# 4) Clustering
+
+Choose between Phenograph (recommended) and FlowSOM clustering approaches.
+
+The script will automatically name the clusters for you based on the best match
+in the cell database spreadsheet. You should check the validity of these names
+by looking at the density plots for the clusters. If you don't get good results 
+with this automated naming, check whether the cell types you are looking for
+are covered in the database. If they are not, add them with the appropriate
+positive and negative expression markers.
+
+You'll get the option to rename any clusters.
+
+
+```{r Clustering}
+source( file.path( fcs.src.dir, "flowcytoscript_clustering.r") )
+```
+
+
+
+# 5) Run analysis and print figures
+
+You can take a break while it runs, although it may only be a couple of minutes.
+
+```{r Run the analysis}
+source( file.path( fcs.src.dir, "flowcytoscript_run_analysis.r") )
+```
+
+
+# Results
+## Summary
+FlowCytoScript analyzed your data on ```r experimental.system``` in the ```r tissue.type```.```r length(fcs.channel)``` channels were included and clustering was performed with ```r c("Phenograph", "FlowSOM")[clustering.method]``` on ```r dmrd.data.n```
+cells. ```r length(fcs.cluster.label)``` clusters were found, annotated and ```r p.value.message```
+of these were significantly different between ```r trex.condition[1]``` and ```r trex.condition[2]```. 
+
+tSNE, UMAP and PCA analyses were performed, and heatmaps, histograms and expression density plots were generated. 
+Statistical analysis on marker expression and cluster frequencies was performed, 
+and the results can be found in the ```r fcs.mfi.stats.dir``` folder.
+  
+These are the channels that were used in the analysis: `r fcs.channel.label`  
+  
+  
+The analysis completed in `r analysis.calc.time` minutes. Setting up the analysis and
+clustering took `r setup.time` minutes.
+
+
+  
+  
+## Graphs
+
+tSNE visualization of the data  
+![](./figure_tsne/tsne_plot_all_conditions_cluster.png)
+  
+  
+UMAP visualization of the data with clusters in colored overlay
+![](./figure_umap/umap_plot_all_conditions_cluster.png)
+  
+  
+Principal Components Analysis based on marker expression  
+![](./figure_pca/pca_sample_mfi_loadings.png)
+  
+  
+Principal Components Analysis by cluster distribution
+![](./figure_pca/pca_cluster_loadings.png)
+  
+  
+Heatmap of marker expression by sample
+![](./figure_heatmap/heatmap_by_sample.png)
+  
+  
+Marker expression by sample
+![](./figure_density/density_sample.jpeg)
+  
+  
+Heatmap of marker expression by cluster
+![](./figure_heatmap/heatmap_by_cluster.png)
+  
+  
+Marker expression by cluster
+![](./figure_density/density_cluster.jpeg)
+  
+  
+Sample histogram
+![](./figure_histogram/histogram_by_sample.png)
+  
+Changes in distribution: `r trex.condition[1]` versus `r trex.condition[2]`
+![](./figure_changed_regions/tsne_plot.png)
+   
