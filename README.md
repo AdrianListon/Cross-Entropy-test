@@ -1,7 +1,9 @@
 # FlowCytoScript
 A simplified complete workflow in R for analysis of high parameter flow cytometry data including the Crossentropy method.
 
-This simplified version of the flowcytoscript (Crossentropy test) is intended to be usable by people with little to no experience in programming. All inputs are via plain language prompts in an RStudio markdown notebook. All outputs are organized in folders as before, but additionally an HTML document summarizing the results is created with each analysis.
+This simplified version of the flowcytoscript (Crossentropy test) is intended to be usable by people with little to no experience in programming. All inputs are via plain language prompts in an RStudio markdown notebook. All outputs are organized in folders as before, but additionally an HTML document summarizing the results is created with each analysis. Check out "flowcytoscript.nb.html" for an example of the output.
+
+![tsne_plot_all_conditions__cluster](https://github.com/AdrianListon/Cross-Entropy-test/assets/50043996/2bc3aeb5-0f71-4cb6-9763-f6bf64d7cb28)
 
 **Features**  
 -Clustering with histograms of expression, barcharts and tables of frequencies  
@@ -21,6 +23,13 @@ This simplified version of the flowcytoscript (Crossentropy test) is intended to
 -Clusters are automatically identified and named via matching to a cell type database.  
 -tSNE performed in line with OptSNE modifications to learning rate.  
 -  
+![umap_plot_all_conditions__cluster](https://github.com/AdrianListon/Cross-Entropy-test/assets/50043996/1faccbe6-b2db-422e-ac8e-29d30fbfaf2c)
+
+![histogram_by_sample](https://github.com/AdrianListon/Cross-Entropy-test/assets/50043996/b7fe83ad-bf06-4f30-a695-afa8dde1a804)
+
+![pca_sample_mfi_loadings](https://github.com/AdrianListon/Cross-Entropy-test/assets/50043996/b5dfe9a6-ad3b-45a0-bd0f-2d7d6173ddd6)
+
+![density_cluster](https://github.com/AdrianListon/Cross-Entropy-test/assets/50043996/f872cfba-f65d-4e14-babe-b63074fcc566)
 
 **Using the script:**
 Install R, Rstudio and Rtools. For Mac, you’ll need command line tools and OpenMP. The flowcytoscript_setup.r script (in 00_source_files) can be used to facilitate set-up for new users of R.
