@@ -3,23 +3,23 @@ A simplified complete workflow in R for analysis of high parameter flow cytometr
 
 This simplified version of the flowcytoscript (Crossentropy test) is intended to be usable by people with little to no experience in programming. All inputs are via plain language prompts in an RStudio markdown notebook. All outputs are organized in folders as before, but additionally an HTML document summarizing the results is created with each analysis.
 
-**Features**
--Clustering with histograms of expression, barcharts and tables of frequencies
--tSNE and UMAP
--PCA on MFIs to show sample-level differences
--Crossentropy testing on tSNE and UMAP
--Statistical testing on markers and clusters
--Heatmaps, dendrograms
--
+**Features**  
+-Clustering with histograms of expression, barcharts and tables of frequencies  
+-tSNE and UMAP  
+-PCA on MFIs to show sample-level differences  
+-Crossentropy testing on tSNE and UMAP  
+-Statistical testing on markers and clusters  
+-Heatmaps, dendrograms  
+-  
 
-**Improvements**
--Speed. Optimizations throughout should render this approximately 10x faster, although this will vary depending on multithreading.
--Both FCS and CSV files are accepted as input types.
--FCS data are automatically transformed as best befits the cytometer used. This avoids potentially serious issues with scaling of the data by inexperienced users.
--Clustering can be performed using Phenograph or FlowSOM (via EmbedSOM).
--Clusters are automatically identified and named via matching to a cell type database.
--tSNE performed in line with OptSNE modifications to learning rate.
--
+**Improvements**  
+-Speed. Optimizations throughout should render this approximately 10x faster, although this will vary depending on multithreading.  
+-Both FCS and CSV files are accepted as input types.  
+-FCS data are automatically transformed as best befits the cytometer used. This avoids potentially serious issues with scaling of the data by inexperienced users.  
+-Clustering can be performed using Phenograph or FlowSOM (via EmbedSOM).  
+-Clusters are automatically identified and named via matching to a cell type database.  
+-tSNE performed in line with OptSNE modifications to learning rate.  
+-  
 
 **Using the script:**
 Install R, Rstudio and Rtools. For Mac, you’ll need command line tools and OpenMP. The flowcytoscript_setup.r script (in 00_source_files) can be used to facilitate set-up for new users of R.
