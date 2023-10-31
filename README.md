@@ -1,26 +1,41 @@
-# Cross-Entropy-test
-Unified script for applying the t-SNE diff method on flow cytometry or single cell RNA-seq data
+# FlowCytoScript
+A simplified complete workflow in R for analysis of high parameter flow cytometry data including the Crossentropy method.
 
-For flow cytometry analysis, we recommend using the CSV-based method. This allows users to set the data scales (transformations) 
-in FlowJo or any other standard flow cytometry data analysis software. Scaling of the data is critical for optimal visualization and clustering. 
-To understand how to set scales in FlowJo, see the instruction file "Setting axis in FlowJo for Aurora data.pptx". Use the channel values format.
-To export your data in CSV format, preserving the transformations from FlowJo, see the instructions in "Exporting data in csv format.PNG". For more 
-detail, see https://docs.flowjo.com/flowjo/graphs-and-gating/gw-transform-overview/
+This simplified version of the flowcytoscript (Crossentropy test) is intended to be usable by people with little to no experience in programming. All inputs are via plain language prompts in an RStudio markdown notebook. All outputs are organized in folders as before, but additionally an HTML document summarizing the results is created with each analysis.
 
-The CSV-based version incorporates EmbedSOM for fast parallelized SOM clustering and visualization. There is also an option to use the Irish lab's 
-T-REX method as an add-on for visualizing and identifying changed regions in the tSNE, UMAP or EmbedSOM plots.
-https://elifesciences.org/articles/64653
+**Features**
+-Clustering with histograms of expression, barcharts and tables of frequencies
+-tSNE and UMAP
+-PCA on MFIs to show sample-level differences
+-Crossentropy testing on tSNE and UMAP
+-Statistical testing on markers and clusters
+-Heatmaps, dendrograms
+-
 
-Alternatively, you may use the legacy version "flow analysis", which starts with FCS files.
+**Improvements**
+-Speed. Optimizations throughout should render this approximately 10x faster, although this will vary depending on multithreading.
+-Both FCS and CSV files are accepted as input types.
+-FCS data are automatically transformed as best befits the cytometer used. This avoids potentially serious issues with scaling of the data by inexperienced users.
+-Clustering can be performed using Phenograph or FlowSOM (via EmbedSOM).
+-Clusters are automatically identified and named via matching to a cell type database.
+-tSNE performed in line with OptSNE modifications to learning rate.
+-
 
-For all flow cytometry analysis, we recommend pre-gating and exporting the populations of cells you are interested in. While exporting, 
-adding group or variable tags to the file names will help you sort the files with the script. For a tutorial on using the script, see the lab's website:
-http://www.listonlab.uk/cross-entropy-test/
+**Using the script:**
+Install R, Rstudio and Rtools. For Mac, you’ll need command line tools and OpenMP. The flowcytoscript_setup.r script (in 00_source_files) can be used to facilitate set-up for new users of R.
 
-Publication here:
+In your favorite flow cytometry data analysis program (FlowJo, FCS Express), gate on the cells you wish to analyze and export those cells in new fcs or csv files. While exporting, adding group or variable tags to the file names will help you sort the files with the script. 
+
+To export your data in CSV format, preserving the transformations from FlowJo, see the instructions in "Exporting data in csv format.PNG". For more, see https://docs.flowjo.com/flowjo/graphs-and-gating/gw-transform-overview/
+
+Create a folder for your analysis (preferably not in Dropbox or OneDrive). In this folder, put these items:
+A copy of flowcytoscript.Rmd
+A copy of 00_source_files
+Your files, inside a folder called “Data”
+Double click on the flowcytoscript file to open it in Rstudio.
+Run each code chunk in order by clicking on the green arrow in the upper right corner of the chunk.
+
+Read through the presentation "Simplified flowcytoscript--instructions for use.pptx" for more detail.
+
+To read the publication on the Crossentropy test:
 https://www.cell.com/cell-reports-methods/pdfExtended/S2667-2375(22)00295-8
-
-To install all the packages and dependencies for running the script, run flowcytoscript_setup.R
-
-The parameter file (analyze_flow_cytometry_parameter_csv.R) contains all the variables you may wish to modify, 
-so no changes should be necessary in the main script (analyze_flow_cytometry_csv.R) or source (00_src) files.
